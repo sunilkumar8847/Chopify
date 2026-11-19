@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import download_and_transcribe as dt
+import boundaries
 import highlights
 import llm
 import render_clips
@@ -27,7 +28,11 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    # Phase 2: AI highlight judging (falls back to rule scores
                    # when Ollama or the model is missing).
                    "highlights": True, "llm_provider": "ollama",
-                   "llm": "qwen2.5:3b", "search": None, "semantic": None,
+                   "llm": "qwen2.5:3b",
+                   # Phase 3: keep each clip's setup and payoff (auto) or the
+                   # discovered boundaries exactly (fixed).
+                   "duration_mode": "auto",
+                   "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "caption": None}
 
@@ -121,6 +126,10 @@ def validate_options(options):
         result["llm_provider"] = DEFAULT_OPTIONS["llm_provider"]
     if result["llm_provider"] not in llm.PROVIDERS:
         raise ValueError(f"Unknown LLM provider: {result['llm_provider']}")
+    if result["duration_mode"] is None:
+        result["duration_mode"] = DEFAULT_OPTIONS["duration_mode"]
+    if result["duration_mode"] not in boundaries.MODES:
+        raise ValueError("duration_mode must be auto or fixed.")
     if result["caption"] is not None:
         result["caption"] = branding.validate_caption(result["caption"])
     return result
@@ -148,6 +157,12 @@ def score_keys(transcript_key, data, options):
             highlights=[highlights.VERSION, highlights.PROMPT_VERSION],
             llm_provider=options.get("llm_provider"),
             embed_model=options.get("embed_model"))
+    if options.get("duration_mode", "auto") == "auto":
+        selection_options.update(
+            duration_mode=["auto", boundaries.VERSION],
+            aspect=options.get("aspect"), min_len=options.get("min_len"),
+            max_len=options.get("max_len"),
+            preferred_len=options.get("preferred_len"))
     selection_key = digest([discovery_key, selection_options])
     return discovery_key, selection_key
 
@@ -438,7 +453,10 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                         preferred_len=options["preferred_len"], llm=options["llm"],
                         highlights=options["highlights"],
                         llm_provider=options["llm_provider"],
-                        embed_model=options["embed_model"])
+                        embed_model=options["embed_model"],
+                        duration_mode=options["duration_mode"],
+                        min_len=options["min_len"], max_len=options["max_len"],
+                        aspect=options["aspect"])
                     state["cache"]["selection"] = selection_key
                     save_project(path, state)
 

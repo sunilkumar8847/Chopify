@@ -203,6 +203,10 @@ def main():
                     default=True,
                     help="quality-first selection: shortlist, AI judge, "
                          "near-duplicate removal and a clip cap (default on)")
+    ap.add_argument("--duration-mode", choices=["auto", "fixed"], default="auto",
+                    help="auto (default): adjust each picked clip so it keeps "
+                         "its setup and payoff and fits its content; fixed: "
+                         "keep the discovered start/end exactly")
     ap.add_argument("--search", default=None, metavar="KEYWORDS",
                     help="skip virality scoring: clip around transcript sentences "
                          "containing ALL keywords (e.g. --search \"pricing\")")

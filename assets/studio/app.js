@@ -600,6 +600,17 @@ function renderSelectionSummary(detail) {
     if (judge.from_cache) extra.push(`${judge.from_cache} from cache`);
     lines.push(`Quality first: ${extra.join(" · ")}`);
   }
+  const cuts = selection.boundaries;
+  if (cuts && cuts.mode === "auto" && cuts.refined) {
+    const parts = [];
+    if (cuts.setup_added) parts.push(`${cuts.setup_added} got their setup`);
+    if (cuts.payoff_added) parts.push(`${cuts.payoff_added} got their payoff`);
+    if (cuts.shortened) parts.push(`${cuts.shortened} shortened`);
+    if (cuts.trimmed) parts.push(`${cuts.trimmed} trimmed`);
+    lines.push(
+      `Auto length: ${parts.length ? parts.join(" · ") : "all clips already complete"} (max ${formatDuration(cuts.max_allowed)})`,
+    );
+  }
   box.textContent = lines.join("\n");
   box.hidden = false;
 }
@@ -665,7 +676,7 @@ function renderDetail() {
           const i = start + offset;
           const rank = Number.isFinite(Number(c.rank)) ? Number(c.rank) : i + 1;
           const duration = Number(c.duration ?? c.end - c.start);
-          return `<article class="candidate" data-index="${i}"><input type="checkbox" aria-label="Select clip ${i + 1}" data-select="${i + 1}" ${state.selected.has(i + 1) ? "checked" : ""}><div><div class="candidate-title"><input aria-label="Clip ${i + 1} title" data-field="hook" value="${escapeHTML(c.hook)}"></div><div class="candidate-meta">#${rank} · ${Number(c.overall).toFixed(1)}/10 · ${formatDuration(duration)}${c.similarity !== undefined ? " · SEMANTIC " + Number(c.similarity).toFixed(2) : ""}</div><div class="candidate-time"><label>Start (seconds)<input data-field="start" type="number" min="0" step="0.01" value="${c.start}"></label><label>End (seconds)<input data-field="end" type="number" min="0" step="0.01" value="${c.end}"></label></div><details class="candidate-reason"><summary>Why this clip</summary><p>${escapeHTML(c.reason || "")}</p><pre>${escapeHTML(JSON.stringify(c.score_parts || {}, null, 2))}</pre>${c.judge?.scores ? `<pre>${escapeHTML(JSON.stringify({ ai_judge: c.judge.model, verdict: c.judge.verdict, ai_score: c.judge.llm_score, rule_score: c.judge.rule_score, ...c.judge.scores }, null, 2))}</pre>` : ""}${c.evidence ? `<pre>${escapeHTML(JSON.stringify(c.evidence, null, 2))}</pre>` : ""}</details></div><button data-play="${i}">▶ Watch</button></article>`;
+          return `<article class="candidate" data-index="${i}"><input type="checkbox" aria-label="Select clip ${i + 1}" data-select="${i + 1}" ${state.selected.has(i + 1) ? "checked" : ""}><div><div class="candidate-title"><input aria-label="Clip ${i + 1} title" data-field="hook" value="${escapeHTML(c.hook)}"></div><div class="candidate-meta">#${rank} · ${Number(c.overall).toFixed(1)}/10 · ${formatDuration(duration)}${c.similarity !== undefined ? " · SEMANTIC " + Number(c.similarity).toFixed(2) : ""}</div><div class="candidate-time"><label>Start (seconds)<input data-field="start" type="number" min="0" step="0.01" value="${c.start}"></label><label>End (seconds)<input data-field="end" type="number" min="0" step="0.01" value="${c.end}"></label></div><details class="candidate-reason"><summary>Why this clip</summary><p>${escapeHTML(c.reason || "")}</p><pre>${escapeHTML(JSON.stringify(c.score_parts || {}, null, 2))}</pre>${c.judge?.scores ? `<pre>${escapeHTML(JSON.stringify({ ai_judge: c.judge.model, verdict: c.judge.verdict, ai_score: c.judge.llm_score, rule_score: c.judge.rule_score, ...c.judge.scores }, null, 2))}</pre>` : ""}${c.evidence ? `<pre>${escapeHTML(JSON.stringify(c.evidence, null, 2))}</pre>` : ""}${c.boundaries?.notes?.length ? `<p>Length: ${escapeHTML(c.boundaries.notes.join("; "))} (was ${formatDuration(c.boundaries.original[1] - c.boundaries.original[0])})</p>` : ""}</details></div><button data-play="${i}">▶ Watch</button></article>`;
         })
         .join("")
     : '<p class="muted">Find clips to see candidates here. You can adjust selection and timing before export.</p>';

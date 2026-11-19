@@ -35,6 +35,8 @@ import evidence
 import visual
 
 OLLAMA_HOST = "http://localhost:11434"
+# Phase 3: a shortened clip may score at most this much lower with the AI judge.
+SHORTEN_TOLERANCE = 1.0
 
 LONG_SOURCE_SECONDS = 7200
 BLOCK_SECONDS = 1800
@@ -1600,12 +1602,17 @@ def discover(workdir, min_len=15, max_len=300, preferred_len=None,
 def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
            band=None, llm=None, host=OLLAMA_HOST, mode="heuristic",
            highlights=False, llm_provider=None, embed_model=None,
-           judge_provider=None):
+           judge_provider=None, duration_mode="fixed", min_len=15,
+           max_len=300, aspect=None):
     """Read candidates.json, write segments.json and selection.json.
 
     ``highlights=True`` runs the Phase 2 stage (shortlist, AI judge, near-
     duplicate removal, quality cap) on the rule-scored candidates; ``llm`` is
     then the judge model. Without it, behaviour is unchanged.
+
+    ``duration_mode="auto"`` (Phase 3) then adjusts each selected clip's start
+    and end so it keeps its setup and payoff (see boundaries.py); "fixed"
+    keeps the discovered boundaries exactly.
     """
     workdir = Path(workdir)
     candidates, discovery = load_candidates(workdir)
@@ -1615,10 +1622,12 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
     deduped = dedupe_candidates(candidates, preferred_len=preferred_len,
                                 band=effective_band, min_score=min_score)
     highlight_info = None
-    if highlights:
-        import highlights as highlight_stage
+    transcript = None
+    if highlights or duration_mode == "auto":
         transcript = json.loads((workdir / "transcript.json").read_text(
             encoding="utf-8-sig"))
+    if highlights:
+        import highlights as highlight_stage
         deduped, highlight_info = highlight_stage.run(
             workdir, deduped, discovery, transcript, model=llm,
             provider_name=llm_provider,
@@ -1646,6 +1655,40 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
         evidence_available=discovery.get("evidence_available"))
     if highlight_info is not None:
         stats["highlights"] = highlight_info
+    if duration_mode == "auto":
+        import boundaries
+        sentences = sentenceize((transcript or {}).get("words") or [])
+        index = WindowIndex(sentences) if sentences else None
+        verify = None
+        judged = (highlight_info or {}).get("status") in {"ok", "partial"}
+        if judged and (judge_provider is not None or llm):
+            import highlights as highlight_stage
+            import llm as llm_mod
+            provider = judge_provider or llm_mod.get_provider(
+                llm_provider, llm, None if host == OLLAMA_HOST else host)
+            words = (transcript or {}).get("words") or []
+            language = (transcript or {}).get("language") or ""
+
+            def verify(segment, first, last):
+                """Keep a shortened clip only if the AI judge still likes it."""
+                before = (segment.get("judge") or {}).get("llm_score")
+                if before is None:
+                    return True
+                span = sentences[first:last + 1]
+                text = " ".join(w["word"] for s in span for w in s["words"])
+                after = highlight_stage.judge_text(
+                    workdir, provider,
+                    {"start": float(span[0]["start"]), "end": float(span[-1]["end"])},
+                    text, words, language)
+                return after is not None and after >= before - SHORTEN_TOLERANCE
+        segments, stats["boundaries"] = boundaries.refine_segments(
+            segments, sentences, mode="auto", verify_shorter=verify,
+            duration=(discovery.get("source_duration")
+                      or (transcript or {}).get("duration")),
+            min_len=min_len, max_len=max_len, band=effective_band,
+            preferred_len=preferred_len, aspect=aspect,
+            score_window=(lambda a, b: index.score(a, b)[1]) if index else None,
+            make_hook=make_hook)
     _write_json(workdir / "segments.json", segments)
     _write_json(workdir / "selection.json", stats)
     return segments, mode

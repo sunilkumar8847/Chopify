@@ -329,6 +329,26 @@ def degenerate(judgments):
     return len(shapes) == 1
 
 
+def judge_text(workdir, provider, item, text, words=None, language=""):
+    """AI score (0-10) for one arbitrary clip, using the judgment cache.
+
+    Used by Phase 3 to check that a shortened clip is still as good; the
+    judging itself is exactly the same as in ``run``. None if unavailable.
+    """
+    text = str(text or "")[:TEXT_LIMIT]
+    context = context_before(words or [], float(item["start"]))
+    cache = load_cache(workdir)
+    key = _cache_key(provider.label, text, context)
+    judgment = cache.get(key) if validate_judgment(cache.get(key)) else None
+    if judgment is None:
+        judgment = _judge_clip(provider, item, text, context, language)
+        if judgment is None:
+            return None
+        cache[key] = judgment
+        save_cache(workdir, cache)
+    return llm_score(judgment)
+
+
 # ----------------------------------------------------- near duplicates
 
 def _normalize(text):

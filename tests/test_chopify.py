@@ -1180,3 +1180,65 @@ def test_list_styles_flag():
     assert result.returncode == 0
     assert result.stdout.splitlines() == list(render_clips.CAPTION_STYLES)
     assert result.stderr == ""
+
+
+class _TTY:
+    def isatty(self):
+        return True
+
+
+def _run_cli_with_tty(monkeypatch, argv, answers=None):
+    """Run chopify.main as if typed in a real terminal; record prompts."""
+    import builtins
+    import projects
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        if answers is None:
+            raise AssertionError(f"unexpected prompt: {prompt}")
+        return answers.pop(0)
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    monkeypatch.setattr(chopify.sys, "stdin", _TTY())
+    monkeypatch.setattr(chopify.sys, "argv", ["chopify.py", *argv])
+    monkeypatch.setattr(projects, "run_project", lambda *a, **k: {})
+    chopify.main()
+    return prompts
+
+
+def test_no_input_skips_prompts_and_uses_defaults_for_existing_project(tmp_path, monkeypatch):
+    import projects
+    path = tmp_path / "proj"
+    projects.init_project(path, "recording.mp4", {})
+    prompts = _run_cli_with_tty(monkeypatch, [
+        "--project", str(path), "--action", "prepare", "--no-input", "--no-preflight"])
+    assert prompts == []
+    options = projects.read_project(path)["options"]
+    assert options["min_score"] == 8.0
+    assert options["preferred_len"] is None
+
+
+def test_no_input_skips_prompts_and_uses_defaults_for_new_project(tmp_path, monkeypatch):
+    import projects
+    path = tmp_path / "work"
+    prompts = _run_cli_with_tty(monkeypatch, [
+        "recording.mp4", "--workdir", str(path), "--action", "prepare",
+        "--no-input", "--no-preflight"])
+    assert prompts == []
+    options = projects.read_project(path)["options"]
+    assert options["min_score"] == 8.0
+    assert options["preferred_len"] is None
+
+
+def test_terminal_run_without_no_input_still_prompts(tmp_path, monkeypatch):
+    import projects
+    path = tmp_path / "proj"
+    projects.init_project(path, "recording.mp4", {})
+    prompts = _run_cli_with_tty(monkeypatch, [
+        "--project", str(path), "--action", "prepare", "--no-preflight"],
+        answers=["7.5", "45s"])
+    assert len(prompts) == 2 and prompts[0].startswith("Minimum clip score")
+    options = projects.read_project(path)["options"]
+    assert options["min_score"] == 7.5
+    assert options["preferred_len"] == 45

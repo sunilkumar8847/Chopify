@@ -108,8 +108,12 @@ class Studio:
             self.futures[project_id] = self.executor.submit(self._run, path, action, preview, pick)
 
     def _run(self, path, action, preview, pick):
+        # Background jobs have no one to answer prompts: --no-input keeps the
+        # project's saved settings, and stdin=DEVNULL stops the child from
+        # inheriting (and blocking on) the Studio terminal.
         cmd = [sys.executable, str(HERE / "chopify.py"), "--project", str(path),
-               "--action", action, "--out", str(path / ("previews" if preview else "clips"))]
+               "--action", action, "--out", str(path / ("previews" if preview else "clips")),
+               "--no-input"]
         if preview:
             cmd.append("--preview")
         if pick:
@@ -119,7 +123,8 @@ class Studio:
                 with self.lock:
                     if self.closing:
                         return
-                    child = subprocess.Popen(cmd, cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+                    child = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.DEVNULL,
+                                             stdout=log, stderr=subprocess.STDOUT)
                     self.processes.add(child)
                 code = child.wait()
                 with self.lock:

@@ -119,3 +119,90 @@ def test_queued_projects_reject_duplicate_jobs_and_edits(server, monkeypatch):
             assert exc.value.code == 400
     finally:
         gate.set()
+
+
+# Stand-in for chopify.py: records how Studio launched it, then tries to read
+# input exactly like the real scoring prompt does.
+FAKE_CHOPIFY = r'''
+import json, sys, time
+from pathlib import Path
+project = Path(sys.argv[sys.argv.index("--project") + 1])
+report = {"argv": sys.argv[1:], "start": time.time()}
+try:
+    report["input"] = input("Minimum clip score (0-10, Enter = 8.0): ")
+except EOFError:
+    report["input"] = "EOF"
+report["end"] = time.time()
+(project / "launch.json").write_text(json.dumps(report), encoding="utf-8")
+'''
+
+
+@pytest.fixture
+def fake_studio(tmp_path, monkeypatch):
+    import dashboard
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "chopify.py").write_text(FAKE_CHOPIFY, encoding="utf-8")
+    monkeypatch.setattr(dashboard, "HERE", bin_dir)
+    studio = dashboard.Studio(tmp_path / "projects")
+    yield studio
+    studio.close()
+
+
+def test_studio_job_never_waits_for_terminal_input(fake_studio):
+    import projects
+    state = projects.create_project(fake_studio.root, "recording.mp4", {})
+    fake_studio.enqueue(state["id"], "prepare")
+    # A job blocked on input() would never finish; fail fast instead of hanging.
+    fake_studio.futures[state["id"]].result(timeout=60)
+    path = projects.project_path(fake_studio.root, state["id"])
+    report = json.loads((path / "launch.json").read_text(encoding="utf-8"))
+    # --no-input disables the prompt. stdin must also not be the Studio
+    # terminal: reading it hits EOF at once. (isatty() is not asserted:
+    # Windows reports True for the NUL device even though it never blocks.)
+    assert "--no-input" in report["argv"]
+    assert report["input"] == "EOF"
+    assert report["end"] - report["start"] < 30
+
+
+def test_studio_queue_runs_next_job_after_previous_finishes(fake_studio):
+    import projects
+    ids = [projects.create_project(fake_studio.root, f"video{i}.mp4", {})["id"]
+           for i in range(3)]
+    for project_id in ids:
+        fake_studio.enqueue(project_id, "prepare")
+    for project_id in ids:
+        fake_studio.futures[project_id].result(timeout=60)
+    reports = [json.loads((projects.project_path(fake_studio.root, i) / "launch.json")
+                          .read_text(encoding="utf-8")) for i in ids]
+    # The single worker runs jobs one after another, in queue order.
+    for earlier, later in zip(reports, reports[1:]):
+        assert earlier["end"] <= later["start"]
+
+
+def test_studio_launches_jobs_detached_from_terminal(tmp_path, monkeypatch):
+    # The behavioural test above cannot tell inherited stdin from DEVNULL when
+    # pytest itself has no terminal, so pin both launch settings directly.
+    import subprocess
+    import dashboard
+    import projects
+    launched = {}
+
+    class FakeChild:
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        launched.update(cmd=cmd, **kwargs)
+        return FakeChild()
+
+    monkeypatch.setattr(dashboard.subprocess, "Popen", fake_popen)
+    studio = dashboard.Studio(tmp_path / "projects")
+    try:
+        state = projects.create_project(studio.root, "recording.mp4", {})
+        studio.enqueue(state["id"], "prepare")
+        studio.futures[state["id"]].result(timeout=60)
+    finally:
+        studio.close()
+    assert "--no-input" in launched["cmd"]
+    assert launched["stdin"] is subprocess.DEVNULL

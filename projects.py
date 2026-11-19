@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 
 import download_and_transcribe as dt
+import highlights
+import llm
 import render_clips
 import score_clips
 import evidence
@@ -22,7 +24,10 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "loudnorm": False, "whisper_model": "medium", "device": "cpu",
                    "min_len": 15, "max_len": 300, "max_clips": None,
                    "min_score": 8.0, "preferred_len": None,
-                   "llm": None, "search": None, "semantic": None,
+                   # Phase 2: AI highlight judging (falls back to rule scores
+                   # when Ollama or the model is missing).
+                   "highlights": True, "llm_provider": "ollama",
+                   "llm": "qwen2.5:3b", "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "caption": None}
 
@@ -108,6 +113,14 @@ def validate_options(options):
     for key in ("tighten", "loudnorm"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
+    if result["highlights"] is None:
+        result["highlights"] = DEFAULT_OPTIONS["highlights"]
+    if not isinstance(result["highlights"], bool):
+        raise ValueError("highlights must be true or false.")
+    if result["llm_provider"] is None:
+        result["llm_provider"] = DEFAULT_OPTIONS["llm_provider"]
+    if result["llm_provider"] not in llm.PROVIDERS:
+        raise ValueError(f"Unknown LLM provider: {result['llm_provider']}")
     if result["caption"] is not None:
         result["caption"] = branding.validate_caption(result["caption"])
     return result
@@ -129,6 +142,12 @@ def score_keys(transcript_key, data, options):
                             visual.FEATURE_VERSION])
     selection_options = {key: options[key] for key in (
         "min_score", "max_clips", "llm")}
+    if options.get("highlights"):
+        # Judge results are cached separately, so re-selecting is cheap.
+        selection_options.update(
+            highlights=highlights.VERSION,
+            llm_provider=options.get("llm_provider"),
+            embed_model=options.get("embed_model"))
     selection_key = digest([discovery_key, selection_options])
     return discovery_key, selection_key
 
@@ -416,7 +435,10 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                         path,
                         min_score=options["min_score"] if options["min_score"] is not None else 8.0,
                         max_clips=options["max_clips"],
-                        preferred_len=options["preferred_len"], llm=options["llm"])
+                        preferred_len=options["preferred_len"], llm=options["llm"],
+                        highlights=options["highlights"],
+                        llm_provider=options["llm_provider"],
+                        embed_model=options["embed_model"])
                     state["cache"]["selection"] = selection_key
                     save_project(path, state)
 

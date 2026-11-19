@@ -584,6 +584,22 @@ function renderSelectionSummary(detail) {
       selection.content_profile;
     if (profile) lines.push(`Footage: ${profile}`);
   }
+  const judge = selection.highlights;
+  if (judge) {
+    const status = {
+      ok: `AI judge ${judge.judge}: ${judge.judged} of ${judge.shortlisted} shortlisted clips judged`,
+      partial: `AI judge ${judge.judge}: ${judge.judged} of ${judge.shortlisted} judged (${judge.reason})`,
+      unavailable: `AI judge off: ${judge.reason} Using rule-based scores.`,
+      invalid: `AI judge gave no usable answers. Using rule-based scores.`,
+      off: `Rule-based scores on ${judge.shortlisted} shortlisted clips (no AI judge model set).`,
+    }[judge.status];
+    if (status) lines.push(status);
+    const extra = [`at most ${judge.cap} clips`];
+    if (judge.near_duplicates)
+      extra.push(`${judge.near_duplicates} near-duplicate(s) removed`);
+    if (judge.from_cache) extra.push(`${judge.from_cache} from cache`);
+    lines.push(`Quality first: ${extra.join(" · ")}`);
+  }
   box.textContent = lines.join("\n");
   box.hidden = false;
 }
@@ -649,7 +665,7 @@ function renderDetail() {
           const i = start + offset;
           const rank = Number.isFinite(Number(c.rank)) ? Number(c.rank) : i + 1;
           const duration = Number(c.duration ?? c.end - c.start);
-          return `<article class="candidate" data-index="${i}"><input type="checkbox" aria-label="Select clip ${i + 1}" data-select="${i + 1}" ${state.selected.has(i + 1) ? "checked" : ""}><div><div class="candidate-title"><input aria-label="Clip ${i + 1} title" data-field="hook" value="${escapeHTML(c.hook)}"></div><div class="candidate-meta">#${rank} · ${Number(c.overall).toFixed(1)}/10 · ${formatDuration(duration)}${c.similarity !== undefined ? " · SEMANTIC " + Number(c.similarity).toFixed(2) : ""}</div><div class="candidate-time"><label>Start (seconds)<input data-field="start" type="number" min="0" step="0.01" value="${c.start}"></label><label>End (seconds)<input data-field="end" type="number" min="0" step="0.01" value="${c.end}"></label></div><details class="candidate-reason"><summary>Why this clip</summary><p>${escapeHTML(c.reason || "")}</p><pre>${escapeHTML(JSON.stringify(c.score_parts || {}, null, 2))}</pre>${c.evidence ? `<pre>${escapeHTML(JSON.stringify(c.evidence, null, 2))}</pre>` : ""}</details></div><button data-play="${i}">▶ Watch</button></article>`;
+          return `<article class="candidate" data-index="${i}"><input type="checkbox" aria-label="Select clip ${i + 1}" data-select="${i + 1}" ${state.selected.has(i + 1) ? "checked" : ""}><div><div class="candidate-title"><input aria-label="Clip ${i + 1} title" data-field="hook" value="${escapeHTML(c.hook)}"></div><div class="candidate-meta">#${rank} · ${Number(c.overall).toFixed(1)}/10 · ${formatDuration(duration)}${c.similarity !== undefined ? " · SEMANTIC " + Number(c.similarity).toFixed(2) : ""}</div><div class="candidate-time"><label>Start (seconds)<input data-field="start" type="number" min="0" step="0.01" value="${c.start}"></label><label>End (seconds)<input data-field="end" type="number" min="0" step="0.01" value="${c.end}"></label></div><details class="candidate-reason"><summary>Why this clip</summary><p>${escapeHTML(c.reason || "")}</p><pre>${escapeHTML(JSON.stringify(c.score_parts || {}, null, 2))}</pre>${c.judge?.scores ? `<pre>${escapeHTML(JSON.stringify({ ai_judge: c.judge.model, verdict: c.judge.verdict, ai_score: c.judge.llm_score, rule_score: c.judge.rule_score, ...c.judge.scores }, null, 2))}</pre>` : ""}${c.evidence ? `<pre>${escapeHTML(JSON.stringify(c.evidence, null, 2))}</pre>` : ""}</details></div><button data-play="${i}">▶ Watch</button></article>`;
         })
         .join("")
     : '<p class="muted">Find clips to see candidates here. You can adjust selection and timing before export.</p>';
@@ -881,6 +897,7 @@ $("#settings-form").addEventListener(
     values.preferred_len = (values.preferred_len || "").trim() || null;
     values.tighten = form.elements.tighten.checked;
     values.loudnorm = form.elements.loudnorm.checked;
+    values.highlights = form.elements.highlights.checked;
     values.centers = [Number(values.center1), Number(values.center2)];
     delete values.center1;
     delete values.center2;

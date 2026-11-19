@@ -438,9 +438,9 @@
                     <option>auto</option>
                   </select></label
                 ><label
-                  >Local scoring model (optional)<input
+                  >AI judge model (Ollama, optional)<input
                     name="llm"
-                    placeholder="qwen2.5:7b" /></label
+                    placeholder="qwen2.5:3b" /></label
                 ><label
                   >Minimum score<input
                     name="min_score"
@@ -457,6 +457,10 @@
                     autocomplete="off"
                 /></label>
               </details>
+              <label class="check"
+                ><input name="highlights" type="checkbox" /> Fewer, better clips
+                (AI judge + duplicate removal)</label
+              >
               <label class="check"
                 ><input name="tighten" type="checkbox" /> Remove fillers & long
                 silences</label

@@ -191,9 +191,18 @@ def main():
                     help="remove filler words (um, uh...) and long silences")
     ap.add_argument("--loudnorm", action="store_true",
                     help="normalize audio to -14 LUFS (platform standard)")
-    ap.add_argument("--llm", nargs="?", const="qwen2.5:7b", default=None,
+    ap.add_argument("--llm", nargs="?", const="qwen2.5:3b", default="qwen2.5:3b",
                     metavar="MODEL",
-                    help="pick clips with a local Ollama model (e.g. qwen2.5:7b)")
+                    help="AI judge model via the LLM provider (default "
+                         "qwen2.5:3b; falls back to rule scores if missing)")
+    ap.add_argument("--no-llm", dest="llm", action="store_const", const=None,
+                    help="rule-based scoring only, no AI judge")
+    ap.add_argument("--llm-provider", default="ollama",
+                    help="LLM provider for the AI judge (default ollama)")
+    ap.add_argument("--highlights", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="quality-first selection: shortlist, AI judge, "
+                         "near-duplicate removal and a clip cap (default on)")
     ap.add_argument("--search", default=None, metavar="KEYWORDS",
                     help="skip virality scoring: clip around transcript sentences "
                          "containing ALL keywords (e.g. --search \"pricing\")")
@@ -294,7 +303,8 @@ def main():
             for key in options:
                 if key == "caption":
                     continue
-                if flag_given("--" + key.replace("_", "-")):
+                flag = key.replace("_", "-")
+                if flag_given("--" + flag) or flag_given("--no-" + flag):
                     state["options"][key] = options[key]
             if interactive:
                 if ask_score:

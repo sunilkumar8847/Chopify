@@ -145,7 +145,9 @@ def load_transcript(workdir):
     return data
 
 
-ARC_RE = re.compile(r"[.!?\u2026][\"')\]]?$")
+# "\u0964"/"\u0965" are the Devanagari danda (\u0964) and double danda (\u0965) that
+# Whisper uses to end Hindi sentences.
+ARC_RE = re.compile(r"[.!?\u2026\u0964\u0965][\"')\]]?$")
 
 
 def is_arc_complete(text):
@@ -210,6 +212,21 @@ STOPWORDS = {"the", "a", "an", "and", "or", "but", "to", "of", "in", "on",
              "this", "that", "you", "your", "i", "my", "we", "our", "me",
              "at", "as", "so", "if", "then", "than", "have", "has", "had",
              "do", "does", "did", "will", "would", "can", "could", "just"}
+
+# Hindi (Devanagari) and Hinglish cues. Short Latin words are space-padded so
+# they only match whole words ("dil" must not match "dildo"); matching runs
+# on " " + text.lower() + " ". English cue behaviour is unchanged.
+HOOK_CUES = HOOK_CUES + (" suno ", " dekho ", " asli baat", " sach bataun",
+                         " sach bolu", "सुनो", "देखो", "असली बात", "सच बताऊं")
+CURIOSITY_CUES = CURIOSITY_CUES + (" raaz ", " sach kya", " kisi ko nahi pata",
+                                   "राज़", "सच क्या", "किसी को नहीं पता")
+SHOCK_CUES = SHOCK_CUES + (" pagal ", " gazab ", " bawaal ", " kamaal ",
+                           "पागल", "गज़ब", "कमाल", "हैरान")
+HUMOUR_CUES = HUMOUR_CUES + ("hahaha", " mazaa ", " mazak ", "मज़ा", "मजाक")
+EMOTION_CUES = EMOTION_CUES + (" dil ", " pyaar ", " dar lag", " khushi ",
+                               " dukh ", "दिल", "प्यार", "डर लग", "खुशी", "दुख")
+REACTION_PHRASES = REACTION_PHRASES + (" kya baat", " arey ", " are yaar",
+                                       " oh bhai", "क्या बात", "अरे")
 
 TEXT_WEIGHTS = {
     "hook": 0.18, "payoff": 0.16, "self_containment": 0.12, "arc": 0.12,
@@ -937,6 +954,8 @@ def _public_segment(item):
     }
     if item.get("evidence") is not None:
         segment["evidence"] = item["evidence"]
+    if item.get("judge") is not None:
+        segment["judge"] = item["judge"]
     return segment
 
 
@@ -971,6 +990,8 @@ def select_candidates(candidates, min_score=8.0, max_clips=None,
         record = {key: segment[key] for key in PUBLIC_SEGMENT_KEYS}
         if "evidence" in segment:
             record["evidence"] = segment["evidence"]
+        if "judge" in segment:
+            record["judge"] = segment["judge"]
         segments.append(record)
 
     if evidence_available is None:
@@ -1073,7 +1094,8 @@ def make_hook(text, max_words=7):
 
 
 def _norm_token(w):
-    return re.sub(r"[^\w']", "", w.lower())
+    # \w alone drops Devanagari vowel signs (मैंने -> मन), so keep that block.
+    return re.sub(r"[^\w'ऀ-ॣ०-ॿ]", "", w.lower())
 
 
 def _grow_window(sentences, seed, taken, min_len, max_len):
@@ -1576,8 +1598,15 @@ def discover(workdir, min_len=15, max_len=300, preferred_len=None,
 
 
 def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
-           band=None, llm=None, host=OLLAMA_HOST, mode="heuristic"):
-    """Read candidates.json, write segments.json and selection.json."""
+           band=None, llm=None, host=OLLAMA_HOST, mode="heuristic",
+           highlights=False, llm_provider=None, embed_model=None,
+           judge_provider=None):
+    """Read candidates.json, write segments.json and selection.json.
+
+    ``highlights=True`` runs the Phase 2 stage (shortlist, AI judge, near-
+    duplicate removal, quality cap) on the rule-scored candidates; ``llm`` is
+    then the judge model. Without it, behaviour is unchanged.
+    """
     workdir = Path(workdir)
     candidates, discovery = load_candidates(workdir)
     effective_band = (evidence.profile_band(
@@ -1585,7 +1614,21 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
         if band is None else band)
     deduped = dedupe_candidates(candidates, preferred_len=preferred_len,
                                 band=effective_band, min_score=min_score)
-    if llm:
+    highlight_info = None
+    if highlights:
+        import highlights as highlight_stage
+        transcript = json.loads((workdir / "transcript.json").read_text(
+            encoding="utf-8-sig"))
+        deduped, highlight_info = highlight_stage.run(
+            workdir, deduped, discovery, transcript, model=llm,
+            provider_name=llm_provider,
+            host=None if host == OLLAMA_HOST else host,
+            embed_model=embed_model, max_clips=max_clips,
+            provider=judge_provider)
+        max_clips = highlight_info["cap"]
+        if highlight_info["judged"]:
+            mode = "llm"
+    elif llm:
         adjusted = ollama_rerank(deduped[:50], llm, host)
         if adjusted is not None:
             by_key = {_candidate_key(item): item for item in adjusted}
@@ -1601,6 +1644,8 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
         preferred_len=preferred_len, band=effective_band, dedupe=False,
         discovery=discovery, mode=mode,
         evidence_available=discovery.get("evidence_available"))
+    if highlight_info is not None:
+        stats["highlights"] = highlight_info
     _write_json(workdir / "segments.json", segments)
     _write_json(workdir / "selection.json", stats)
     return segments, mode

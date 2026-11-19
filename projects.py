@@ -145,7 +145,7 @@ def score_keys(transcript_key, data, options):
     if options.get("highlights"):
         # Judge results are cached separately, so re-selecting is cheap.
         selection_options.update(
-            highlights=highlights.VERSION,
+            highlights=[highlights.VERSION, highlights.PROMPT_VERSION],
             llm_provider=options.get("llm_provider"),
             embed_model=options.get("embed_model"))
     selection_key = digest([discovery_key, selection_options])

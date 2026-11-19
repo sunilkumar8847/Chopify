@@ -7,9 +7,12 @@ Runs after the existing rule-based scoring and overlap dedupe:
                 every part of the timeline gets a fair share).
 2. Judge      - a local LLM (Ollama, Qwen 2.5 3B by default) scores each
                 shortlisted clip 0-10 for hook, payoff, emotion, standalone
-                context and shareability, in batches, as validated JSON.
-                English, Hindi (Devanagari) and Hinglish are all judged on
-                meaning. Results are cached per clip text, model and prompt.
+                context and shareability, one clip per request, as validated
+                JSON. (Batches of several clips made the 3B model copy one
+                answer for all of them; see PROMPT_VERSION.)
+                English and Hinglish are judged directly; mostly-Devanagari
+                Hindi is translated to English first (see _judge_clip).
+                Results are cached per clip text, model and prompt.
 3. Combine    - final = 30% rule score (as a percentile within this video,
                 so it is language-neutral) + 70% LLM score. A "skip" verdict
                 caps the clip at 4.0.
@@ -21,6 +24,7 @@ Runs after the existing rule-based scoring and overlap dedupe:
 
 If the LLM is unavailable or returns unusable output, the shortlisted clips
 keep their rule scores (the previous behaviour) and steps 4-5 still apply.
+Degenerate output (every clip given the identical scores) counts as unusable.
 """
 import hashlib
 import json
@@ -31,10 +35,16 @@ from pathlib import Path
 import llm as llm_mod
 
 VERSION = 1
-PROMPT_VERSION = 1
+# 2: one clip per request, summary-first, no zero-filled example reply
+#    (v1 made qwen2.5:3b score every real clip 0).
+# 3: mostly-Devanagari clips are translated to English, then judged.
+PROMPT_VERSION = 3
+TRANSLATE_SHARE = 0.3
+TRANSLATION_KEEP = 400
 CACHE_FILE = "highlights_cache.json"
 SHORTLIST_MIN, SHORTLIST_DEFAULT, SHORTLIST_MAX = 30, 40, 60
-BATCH_SIZE = 5
+PROGRESS_EVERY = 10
+DEGENERATE_MIN = 5
 TEXT_LIMIT = 1600
 CONTEXT_SECONDS = 25.0
 CONTEXT_LIMIT = 400
@@ -48,39 +58,49 @@ LEXICAL_DUPLICATE = 0.60
 CAP_MIN, CAP_MAX, MINUTES_PER_CLIP = 3, 12, 8.0
 
 SYSTEM_PROMPT = (
-    "You are an expert short-form video editor for YouTube Shorts, Instagram "
-    "Reels and TikTok. You decide whether a transcript excerpt would make a "
-    "strong standalone short clip.\n"
-    "Transcripts can be English, Hindi in Devanagari script, or Hinglish "
-    "(Hindi written in Latin letters mixed with English). Judge the meaning, "
-    "never the language or spelling. Transcripts are automatic and may "
-    "contain recognition errors.\n"
-    "Score every clip from 0 to 10 on:\n"
-    "- hook: do the first seconds grab attention?\n"
-    "- payoff: does it land a punchline, answer, reveal or emotional peak?\n"
-    "- emotion: humour, surprise, tension, inspiration or outrage.\n"
-    "- standalone: understandable without the rest of the video? Penalize "
-    "clips that start mid-thought or depend on earlier context.\n"
-    "- shareability: would viewers share, comment or rewatch it?\n"
-    "Be strict. Most clips are average (4-6). Reserve 8 or more for clips you "
-    "would actually publish. verdict is keep, maybe or skip.\n"
-    "Reply with JSON only, one entry per clip id, reason in one short "
-    "English sentence."
+    "You are an experienced short-form video editor (YouTube Shorts, Reels, "
+    "TikTok). You rate how well ONE transcript excerpt would work as a "
+    "standalone short clip.\n"
+    "The transcript may be English, Hindi (Devanagari) or Hinglish (Hindi in "
+    "Latin letters mixed with English). Judge the meaning, never the language. "
+    "Automatic transcripts contain errors; ignore them.\n"
+    "Steps: 1) summary: what happens, in one short English sentence. "
+    "2) reason: why it would or would not work as a short. "
+    "3) Rate each 0-10: hook (do the opening lines grab attention), payoff "
+    "(punchline, reveal, answer or emotional peak), emotion (humour, surprise, "
+    "tension, inspiration, outrage), standalone (makes sense without the rest "
+    "of the video), shareability (would people share, comment or rewatch). "
+    "4) verdict: keep, maybe or skip.\n"
+    "Scale: 0-2 absent, 3-4 weak, 5-6 decent, 7-8 strong, 9-10 exceptional.\n"
+    "Reply with JSON only."
 )
 
+TRANSLATE_PROMPT = (
+    "Translate the transcript into natural English. Keep the meaning, tone "
+    "and order exactly; do not add, explain, improve or summarize anything. "
+    "Reply with JSON only."
+)
+TRANSLATE_SCHEMA = {"type": "object",
+                    "properties": {"english": {"type": "string"}},
+                    "required": ["english"]}
+TRANSLATE_CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"context_english": {"type": "string"},
+                   "english": {"type": "string"}},
+    "required": ["context_english", "english"]}
+
+_SCORE = {"type": "integer", "minimum": 0, "maximum": 10}
+# Field order matters for small models: understand (summary), explain
+# (reason), then score.
 RESPONSE_SCHEMA = {
     "type": "object",
-    "properties": {"clips": {"type": "array", "items": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "integer"},
-            **{key: {"type": "number"} for key in RUBRIC_WEIGHTS},
-            "verdict": {"type": "string", "enum": list(VERDICTS)},
-            "reason": {"type": "string"},
-        },
-        "required": ["id", *RUBRIC_WEIGHTS, "verdict", "reason"],
-    }}},
-    "required": ["clips"],
+    "properties": {
+        "summary": {"type": "string"},
+        "reason": {"type": "string"},
+        **{key: _SCORE for key in RUBRIC_WEIGHTS},
+        "verdict": {"type": "string", "enum": list(VERDICTS)},
+    },
+    "required": ["summary", "reason", *RUBRIC_WEIGHTS, "verdict"],
 }
 
 
@@ -210,6 +230,9 @@ def validate_judgment(entry):
         return None
     result["verdict"] = verdict
     result["reason"] = re.sub(r"\s+", " ", str(entry.get("reason") or "")).strip()[:160]
+    summary = re.sub(r"\s+", " ", str(entry.get("summary") or "")).strip()[:160]
+    if summary:
+        result["summary"] = summary
     return result
 
 
@@ -220,40 +243,90 @@ def llm_score(judgment):
     return round(score, 2)
 
 
-def build_prompt(batch, language):
-    clips = [{"id": index, "seconds": round(item["end"] - item["start"]),
-              "context_before": context, "transcript": text}
-             for index, (item, text, context) in enumerate(batch)]
-    return ("Detected language: " + (language or "unknown") + "\n"
-            + json.dumps({"clips": clips}, ensure_ascii=False) + "\n"
-            + 'Return {"clips":[{"id":0,"hook":0,"payoff":0,"emotion":0,'
-              '"standalone":0,"shareability":0,"verdict":"keep|maybe|skip",'
-              '"reason":"..."}]} with one entry for every id above.')
+def build_prompt(item, text, context, language):
+    lines = [f"Detected language: {language or 'unknown'}",
+             f"Clip length: {round(float(item['end']) - float(item['start']))} seconds"]
+    if context:
+        lines.append("Said just before the clip (the viewer will NOT hear "
+                     "this): " + context)
+    lines.append("Clip transcript: " + text)
+    return "\n".join(lines)
 
 
-def _judge_batch(provider, batch, language):
-    """{index: judgment} for one batch; one retry on unusable output."""
+def devanagari_share(text):
+    """Fraction of the letters in ``text`` that are Devanagari."""
+    letters = [ch for ch in str(text) if ch.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for ch in letters if "ऀ" <= ch <= "ॿ") / len(letters)
+
+
+def _translate(provider, text, context):
+    """(english_text, english_context) or None. One retry."""
+    user = "Transcript: " + text
+    schema = TRANSLATE_SCHEMA
+    if context:
+        user = "Context: " + context + "\n" + user
+        schema = TRANSLATE_CONTEXT_SCHEMA
     for _ in range(2):
         try:
-            raw = provider.chat_json(SYSTEM_PROMPT, build_prompt(batch, language),
+            raw = provider.chat_json(TRANSLATE_PROMPT, user, schema)
+        except llm_mod.LLMError:
+            continue
+        english = raw.get("english") if isinstance(raw, dict) else None
+        if isinstance(english, str) and english.strip():
+            english_context = raw.get("context_english") if context else ""
+            if not isinstance(english_context, str):
+                english_context = ""
+            return english.strip()[:TEXT_LIMIT], english_context.strip()[:CONTEXT_LIMIT]
+    return None
+
+
+def _judge_clip(provider, item, text, context, language):
+    """One validated judgment for one clip, or None; one retry.
+
+    Mostly-Devanagari clips are translated to English first (a separate
+    request), then judged like English. Measured on paired examples, the 3B
+    model separated strong from weak Devanagari clips poorly when judging
+    them directly (gap 1.7 points, 19/25 pairs ordered) but as well as
+    English after translation (gap 5.1, 24/25). Romanized Hinglish is judged
+    directly: translating it made results worse.
+    """
+    translation = None
+    if devanagari_share(text) >= TRANSLATE_SHARE:
+        translation = _translate(provider, text, context)
+        if translation is not None:
+            text, context = translation
+            language = f"en (translated from {language or 'hi'})"
+    for _ in range(2):
+        try:
+            raw = provider.chat_json(SYSTEM_PROMPT,
+                                     build_prompt(item, text, context, language),
                                      RESPONSE_SCHEMA)
         except llm_mod.LLMError:
             continue
-        entries = raw.get("clips") if isinstance(raw, dict) else raw
-        if not isinstance(entries, list):
-            continue
-        found = {}
-        for entry in entries:
-            index = entry.get("id") if isinstance(entry, dict) else None
-            if isinstance(index, bool) or not isinstance(index, int):
-                continue
-            if 0 <= index < len(batch) and index not in found:
-                judgment = validate_judgment(entry)
-                if judgment is not None:
-                    found[index] = judgment
-        if found:
-            return found
-    return {}
+        if (isinstance(raw, dict) and isinstance(raw.get("clips"), list)
+                and len(raw["clips"]) == 1):
+            raw = raw["clips"][0]  # tolerate a wrapped single answer
+        judgment = validate_judgment(raw)
+        if judgment is not None:
+            if translation is not None:
+                judgment["translation"] = translation[0][:TRANSLATION_KEEP]
+            return judgment
+    return None
+
+
+def degenerate(judgments):
+    """True when the model gave every clip the identical scores and verdict.
+
+    Real clips always differ; identical answers mean the model copied a
+    template (prompt v1 did this: all zeros), so they must not be trusted.
+    """
+    if len(judgments) < DEGENERATE_MIN:
+        return False
+    shapes = {tuple(j[key] for key in RUBRIC_WEIGHTS) + (j["verdict"],)
+              for j in judgments}
+    return len(shapes) == 1
 
 
 # ----------------------------------------------------- near duplicates
@@ -390,18 +463,29 @@ def run(workdir, candidates, discovery, transcript, model=None, provider_name=No
                     todo.append((item, texts[_key(item)], context, key))
             log(f"AI judge {provider.label}: {len(picked)} shortlisted, "
                 f"{info['from_cache']} cached, {len(todo)} to judge")
-            for start in range(0, len(todo), BATCH_SIZE):
-                batch = todo[start:start + BATCH_SIZE]
-                found = _judge_batch(provider, [(i, t, c) for i, t, c, _ in batch],
-                                     language)
-                for index, judgment in found.items():
-                    item, _, _, key = batch[index]
-                    judgments[_key(item)] = judgment
-                    cache[key] = judgment
-                if found:
-                    save_cache(workdir, cache)
+            fresh = {}
+            for number, (item, text, context, key) in enumerate(todo, 1):
+                judgment = _judge_clip(provider, item, text, context, language)
+                if judgment is not None:
+                    fresh[key] = (item, judgment)
+                if number % PROGRESS_EVERY == 0 or number == len(todo):
+                    log(f"AI judge: {number}/{len(todo)} clips")
+            everything = list(judgments.values()) + [j for _, j in fresh.values()]
+            if degenerate(everything):
+                judgments = {}
+                fresh = {}
+                info.update(status="invalid", reason=(
+                    "The model gave every clip identical scores; ignored."))
+                log("AI judge output was degenerate -> rule-based scores")
+            for key, (item, judgment) in fresh.items():
+                judgments[_key(item)] = judgment
+                cache[key] = judgment
+            if fresh:
+                save_cache(workdir, cache)
             info["judged"] = len(judgments)
-            if not judgments:
+            if info["status"] == "invalid":
+                pass
+            elif not judgments:
                 info.update(status="invalid",
                             reason="The model returned no usable judgments.")
                 log("AI judge returned no usable output -> rule-based scores")
@@ -428,6 +512,10 @@ def run(workdir, candidates, discovery, transcript, model=None, provider_name=No
             judge.update(model=info["judge"], llm_score=score,
                          scores={k: judgment[k] for k in RUBRIC_WEIGHTS},
                          verdict=judgment["verdict"], reason=judgment["reason"])
+            if judgment.get("summary"):
+                judge["summary"] = judgment["summary"]
+            if judgment.get("translation"):
+                judge["translation"] = judgment["translation"]
             record["overall"] = round(max(0.0, min(10.0, final)), 2)
             if judgment["reason"]:
                 record["rule_reason"] = item.get("reason", "")

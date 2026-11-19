@@ -36,9 +36,9 @@ def cand(start, overall, text=None, length=40.0):
             "reason": "rule reason", "score_parts": {"hook": 0.5}}
 
 
-def batch_ids_and_texts(user_prompt):
-    payload = json.loads(user_prompt.splitlines()[1])
-    return [(clip["id"], clip["transcript"]) for clip in payload["clips"]]
+def prompt_text(user_prompt):
+    marker = "Clip transcript: "
+    return user_prompt[user_prompt.index(marker) + len(marker):]
 
 
 def scores(value, verdict="keep", reason="Strong punchline."):
@@ -51,7 +51,8 @@ class FakeProvider(llm.Provider):
 
     def __init__(self, judge=None, ok=True, replies=None, vectors=None):
         super().__init__("test-model")
-        self.judge = judge or (lambda text: scores(6))
+        # Varied answers: identical scores for every clip count as degenerate.
+        self.judge = judge or (lambda text: scores(5 + len(text) % 4))
         self.ok = ok
         self.replies = list(replies or [])
         self.vectors = vectors
@@ -68,8 +69,12 @@ class FakeProvider(llm.Provider):
             if isinstance(reply, Exception):
                 raise reply
             return reply
-        return {"clips": [{"id": i, **self.judge(text)}
-                          for i, text in batch_ids_and_texts(user)]}
+        if system == highlights.TRANSLATE_PROMPT:
+            reply = {"english": "EN: " + user.split("Transcript: ", 1)[1]}
+            if "context_english" in schema["properties"]:
+                reply["context_english"] = "EN context"
+            return reply
+        return {"summary": "A clip.", **self.judge(prompt_text(user))}
 
     def embed(self, texts, model=None):
         self.embed_calls += 1
@@ -131,7 +136,7 @@ def test_judge_scores_combine_with_rule_percentile(tmp_path):
     assert judge["scores"]["hook"] == 9 and judge["verdict"] == "keep"
     assert best["reason"] == "Strong punchline."
     assert best["rule_reason"] == "rule reason"
-    assert len(provider.calls) == 2  # 10 clips in batches of 5
+    assert len(provider.calls) == 10  # one request per clip
 
 
 def test_prompt_is_multilingual_structured_and_has_context(tmp_path):
@@ -146,24 +151,27 @@ def test_prompt_is_multilingual_structured_and_has_context(tmp_path):
     assert "Hinglish" in call["system"] and "Devanagari" in call["system"]
     assert "Detected language: hi" in call["user"]
     assert "सुनो यार, asli baat ye hai।" in call["user"]  # unescaped, readable
-    payload = json.loads(call["user"].splitlines()[1])
-    assert payload["clips"][0]["context_before"] == "पहले वाली"
-    assert call["schema"]["required"] == ["clips"]
+    assert "will NOT hear this): पहले वाली" in call["user"]
+    required = call["schema"]["required"]
+    assert required[:2] == ["summary", "reason"], "understand before scoring"
+    assert set(highlights.RUBRIC_WEIGHTS) <= set(required)
+    # Regression (prompt v1): a zero-filled example reply made qwen2.5:3b
+    # copy all-zero scores for every real clip.
+    assert '"hook":0' not in call["user"] + call["system"]
 
 
 def test_invalid_entries_are_rejected_individually(tmp_path):
     candidates = [cand(i * 100, 6) for i in range(5)]
-    reply = {"clips": [
-        {"id": 0, **scores(8)},
-        {"id": 1, **scores(11)},                       # out of range
-        {"id": 2, **{**scores(7), "verdict": "great"}},  # bad verdict
-        {"id": 3, **{**scores(7), "hook": "high"}},      # not a number
-        {"id": 99, **scores(7)},                       # unknown id
-        {"id": True, **scores(7)},                     # bool is not an id
-    ]}
-    provider = FakeProvider(replies=[reply])
+    bad = [scores(11),                              # out of range
+           {**scores(7), "verdict": "great"},       # bad verdict
+           {**scores(7), "hook": "high"},           # not a number
+           {**scores(7), "hook": True}]             # bool is not a score
+    # Clip 0 is valid; clips 1-4 get a bad answer twice (first try + retry).
+    replies = [scores(8)] + [item for item in bad for _ in range(2)]
+    provider = FakeProvider(replies=replies)
     records, info = run_stage(tmp_path, candidates, provider)
     assert info["judged"] == 1 and info["status"] == "partial"
+    assert len(provider.calls) == 9
     judged = [r for r in records if "scores" in r["judge"]]
     assert [r["start"] for r in judged] == [0]
     unjudged = [r for r in records if "scores" not in r["judge"]]
@@ -203,6 +211,86 @@ def test_no_model_means_rule_scores_with_quality_steps(tmp_path):
     assert [r["overall"] for r in records] == [7, 8]
 
 
+def test_identical_answers_for_every_clip_are_rejected(tmp_path):
+    # Real-model regression: prompt v1 made qwen2.5:3b answer all zeros/skip
+    # for all 33 clips of a real video. That is not a judgment.
+    candidates = [cand(i * 100, 5 + i * 0.3) for i in range(8)]
+    provider = FakeProvider(judge=lambda text: scores(0, verdict="skip",
+                                                      reason="Mid-thought."))
+    records, info = run_stage(tmp_path, candidates, provider)
+    assert info["status"] == "invalid" and info["judged"] == 0
+    assert "identical" in info["reason"]
+    assert sorted(r["overall"] for r in records) == sorted(
+        c["overall"] for c in candidates), "rule scores kept"
+    assert highlights.load_cache(tmp_path) == {}, "bad output is not cached"
+
+
+def test_a_few_equal_answers_are_still_trusted(tmp_path):
+    candidates = [cand(i * 100, 6) for i in range(3)]
+    records, info = run_stage(tmp_path, candidates, FakeProvider())
+    assert info["status"] == "ok" and info["judged"] == 3
+
+
+def test_devanagari_clips_are_translated_then_judged(tmp_path):
+    # Real-model finding: qwen2.5:3b judged Devanagari directly far worse
+    # than the same content in English; translating first fixed it.
+    provider = FakeProvider()
+    words = [{"word": "पहले", "start": 1.0, "end": 1.5}]
+    hindi = "मेरी दादी ने आज पहली बार वीडियो कॉल किया।"
+    records, _ = highlights.run(tmp_path, [cand(10, 7, text=hindi)],
+                                {"source_duration": 60},
+                                {"words": words, "language": "hi"},
+                                provider=provider, log=lambda m: None)
+    translate, judge = provider.calls
+    assert translate["system"] == highlights.TRANSLATE_PROMPT
+    assert hindi in translate["user"] and "Context: पहले" in translate["user"]
+    assert "Clip transcript: EN: " + hindi in judge["user"]
+    assert "(the viewer will NOT hear this): EN context" in judge["user"]
+    assert "translated from hi" in judge["user"]
+    assert records[0]["judge"]["translation"] == "EN: " + hindi
+
+
+@pytest.mark.parametrize("text", [
+    "Bhai maine socha prank simple hoga, lekin papa wahi khade the!",
+    "Nobody believed I could jump this gap. So I did it.",
+    "Okay guys आज का video thoda alag hai, setup kar raha hoon abhi",
+])
+def test_english_and_hinglish_are_judged_directly(tmp_path, text):
+    provider = FakeProvider()
+    run_stage(tmp_path, [cand(0, 7, text=text)], provider)
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["system"] == highlights.SYSTEM_PROMPT
+
+
+def test_failed_translation_falls_back_to_the_original_text(tmp_path):
+    hindi = "मैंने पाँच साल मेहनत की और आज गोल्ड मेडल जीता।"
+    provider = FakeProvider(replies=[llm.LLMError("down"), {"wrong": 1}])
+    records, info = run_stage(tmp_path, [cand(0, 7, text=hindi)], provider)
+    assert info["status"] == "ok"
+    assert "Clip transcript: " + hindi in provider.calls[-1]["user"]
+    assert "translation" not in records[0]["judge"]
+
+
+def test_devanagari_share():
+    assert highlights.devanagari_share("नमस्ते दोस्तों") == 1.0
+    assert highlights.devanagari_share("hello friends") == 0.0
+    assert highlights.devanagari_share("") == 0.0
+
+
+def test_summary_is_kept_for_review(tmp_path):
+    records, _ = run_stage(tmp_path, [cand(0, 7)], FakeProvider())
+    assert records[0]["judge"]["summary"] == "A clip."
+
+
+def test_old_prompt_cache_entries_are_not_reused(tmp_path, monkeypatch):
+    candidates = [cand(0, 6)]
+    run_stage(tmp_path, candidates, FakeProvider())
+    monkeypatch.setattr(highlights, "PROMPT_VERSION", highlights.PROMPT_VERSION + 1)
+    again = FakeProvider()
+    run_stage(tmp_path, candidates, again)
+    assert len(again.calls) == 1
+
+
 def test_skip_verdict_caps_the_score(tmp_path):
     provider = FakeProvider(judge=lambda text: scores(10, verdict="skip"))
     records, _ = run_stage(tmp_path, [cand(0, 9.5)], provider)
@@ -215,7 +303,7 @@ def test_judgments_are_cached_between_runs(tmp_path):
     candidates = [cand(i * 100, 6) for i in range(7)]
     first = FakeProvider()
     run_stage(tmp_path, candidates, first)
-    assert len(first.calls) == 2
+    assert len(first.calls) == 7
     second = FakeProvider()
     records, info = run_stage(tmp_path, candidates, second)
     assert second.calls == [] and info["from_cache"] == 7 and info["judged"] == 7
@@ -325,7 +413,7 @@ def test_select_never_floods_with_clips(tmp_path):
     segments, mode = score_clips.select(tmp_path, min_score=8.0, highlights=True,
                                         llm="test-model",
                                         judge_provider=FakeProvider(
-                                            judge=lambda t: scores(9)))
+                                            judge=lambda t: scores(9 + len(t) % 2)))
     stats = json.loads((tmp_path / "selection.json").read_text())
     assert mode == "llm"
     assert 0 < len(segments) <= highlights.quality_cap(3600) == 8
@@ -453,6 +541,9 @@ def test_ollama_chat_sends_schema_and_parses_reply(monkeypatch):
     assert sent["path"] == "/api/chat"
     assert sent["payload"]["format"] == {"type": "object"}
     assert sent["payload"]["model"] == "qwen2.5:3b"
+    # Repeatable judgments: greedy decoding with a fixed seed.
+    assert sent["payload"]["options"]["temperature"] == 0
+    assert "seed" in sent["payload"]["options"]
 
 
 def test_tests_never_reach_a_real_model():
@@ -487,6 +578,15 @@ def test_judge_settings_change_selection_but_not_discovery():
     d3, s3 = projects.score_keys("t", {"words": []}, {**base, "highlights": False})
     assert d1 == d2 == d3
     assert len({s1, s2, s3}) == 3
+
+
+def test_new_judge_prompt_reselects_existing_projects(monkeypatch):
+    # Otherwise a project judged with a broken prompt keeps its old selection.
+    base = projects.validate_options({})
+    d1, s1 = projects.score_keys("t", {"words": []}, base)
+    monkeypatch.setattr(highlights, "PROMPT_VERSION", highlights.PROMPT_VERSION + 1)
+    d2, s2 = projects.score_keys("t", {"words": []}, base)
+    assert d1 == d2 and s1 != s2
 
 
 def test_cli_no_llm_and_no_highlights_update_an_existing_project(tmp_path, monkeypatch):

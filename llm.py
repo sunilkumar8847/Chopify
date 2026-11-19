@@ -126,7 +126,7 @@ class OllamaProvider(Provider):
             # A JSON schema makes Ollama constrain the output (structured
             # outputs); plain "json" is the fallback for older servers.
             "format": schema or "json",
-            "options": {"temperature": 0.1, "num_ctx": 8192},
+            "options": {"temperature": 0, "seed": 7, "num_ctx": 8192},
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
         }

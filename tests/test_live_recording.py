@@ -35,9 +35,17 @@ class FakeHandle:
     """Pretends to be yt-dlp: grows its output file on every poll."""
 
     def __init__(self, cmd, exit_after=None, code=0, grow=True, on_poll=None,
-                 log=None, log_text=""):
+                 log=None, log_text="", split=False):
         ext = "ts" if "--hls-use-mpegts" in cmd else "mkv"
         out = cmd[cmd.index("-o") + 1].replace("%(ext)s", ext)
+        if split:
+            # Real from-start behaviour when stopped: separate video/audio
+            # stream files plus yt-dlp bookkeeping, never a merged file.
+            stem = out[: -len(".mkv")]
+            out = stem + ".f399.mkv"
+            Path(stem + ".f140.mkv").write_bytes(b"\0" * 64)
+            Path(stem + ".f140.mkv.ytdl").write_text("{}")
+            Path(stem + ".f140.mkv-Frag7").write_bytes(b"\0" * 8)
         self.path = Path(out)
         self.cmd = cmd
         if log is not None and log_text:
@@ -156,7 +164,82 @@ def test_from_start_mode_uses_dvr_flags():
     assert "--live-from-start" in cmd
     assert cmd[cmd.index("-o") + 1].endswith("part001.%(ext)s")
     assert "--merge-output-format" in cmd and "mkv" in cmd
-    assert any("height<=720" in item for item in cmd)
+    fmt = cmd[cmd.index("-f") + 1]
+    assert "height<=720" in fmt
+    # H.264 first: YouTube otherwise picks AV1 (seen on a real stream).
+    assert fmt.startswith("bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/")
+
+
+# ------------------- regression: stopped "record from the beginning" (bug)
+
+def test_part_groups_recognize_unmerged_from_start_streams(tmp_path):
+    directory = tmp_path / "recording"
+    directory.mkdir()
+    for name in ("part001.f399.mkv", "part001.f140.mkv", "part002.ts"):
+        (directory / name).write_bytes(b"media")
+    for junk in ("part001.f140.mkv.ytdl", "part001.f140.mkv-Frag214",
+                 "part001.f399.mkv.part", "concat.txt", "merged_part001.mkv"):
+        (directory / junk).write_bytes(b"x")
+    (directory / "part003.ts").write_bytes(b"")  # empty: nothing recorded
+    groups = [[p.name for p in g] for g in live.part_groups(tmp_path)]
+    assert groups == [["part001.f140.mkv", "part001.f399.mkv"], ["part002.ts"]]
+
+
+def test_stopped_from_start_recording_is_finalized_not_reported_empty(tmp_path):
+    h = Harness(tmp_path, settings={"from_start": True})
+    h.handle_specs = [{"split": True, "on_poll": stop_at(h.stop, 4)}]
+    assert h.recorder().run() == "recorded"
+    assert h.finalized == [["part001.f140.mkv", "part001.f399.mkv"]]
+    rec = h.rec()
+    assert rec["state"] == "recorded"
+    assert "nothing was recorded" not in rec["message"]
+    assert h.state()["source"].endswith("recording.mp4")
+
+
+def test_from_start_reconnect_and_resume_do_not_redownload_the_beginning(tmp_path):
+    h = Harness(tmp_path, settings={"from_start": True})
+    h.handle_specs = [{"split": True, "exit_after": 3, "code": 1},
+                      {"on_poll": stop_at(h.abort, 3)}]
+    assert h.recorder().run() == "interrupted"
+    h.abort.clear()
+    h.handle_specs = [{"on_poll": stop_at(h.stop, 3)}]
+    assert h.recorder().run() == "recorded"
+    flags = ["--live-from-start" in handle.cmd for handle in h.spawned]
+    assert flags == [True, False, False]
+    assert h.finalized == [["part001.f140.mkv", "part001.f399.mkv",
+                            "part002.ts", "part003.ts"]]
+
+
+def test_downloaded_bytes_without_usable_media_are_not_called_empty(tmp_path):
+    h = Harness(tmp_path)
+    h.handle_specs = [{"on_poll": stop_at(h.stop, 3)}]
+
+    def vanish(handle):
+        stop_at(h.stop, 3)(handle)
+        if h.stop.is_set():
+            # e.g. yt-dlp removed its own temporary file on exit
+            handle.path.unlink()
+    h.handle_specs = [{"on_poll": vanish}]
+    assert h.recorder().run() == "failed"
+    rec = h.rec()
+    assert rec["bytes"] > 0
+    assert "nothing was recorded" not in (rec["message"] or "")
+    assert "no playable media" in rec["error"]
+
+
+def test_find_clips_is_refused_until_the_recording_is_finalized(tmp_path):
+    import dashboard
+    h = Harness(tmp_path, settings={"from_start": True})
+    h.handle_specs = [{"split": True, "on_poll": stop_at(h.abort, 3)}]
+    assert h.recorder().run() == "interrupted"
+    studio = dashboard.Studio(h.root)
+    try:
+        with pytest.raises(ValueError, match="not finalized"):
+            studio.enqueue(h.path.name, "prepare")
+        detail = dashboard.project_detail(h.root, h.path.name)
+        assert detail["recording_parts"] == 1  # Finalize button is offered
+    finally:
+        studio.close()
 
 
 def test_upcoming_stream_waits_then_records(tmp_path):
@@ -385,6 +468,37 @@ def test_finalize_reencodes_parts_with_different_quality(tmp_path):
     out, _ = live.finalize_parts(tmp_path, keep_parts=True)
     assert duration(out) > 3.5
     assert len(live.part_files(tmp_path)) == 2, "keep_parts keeps the parts"
+
+
+def make_stream_file(path, seconds, kind):
+    """Fragmented MP4 holding only video or only audio, like YouTube DASH."""
+    if kind == "video":
+        inputs = ["-f", "lavfi", "-i", f"testsrc=size=320x240:rate=25:duration={seconds}",
+                  "-c:v", "libx264", "-preset", "ultrafast"]
+    else:
+        inputs = ["-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+                  "-c:a", "aac"]
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs,
+                    "-movflags", "frag_keyframe+empty_moov", "-f", "mp4",
+                    str(path)], check=True)
+
+
+@needs_ffmpeg
+def test_finalize_merges_a_stopped_from_start_recording(tmp_path):
+    directory = tmp_path / "recording"
+    directory.mkdir()
+    make_stream_file(directory / "part001.f137.mkv", 3, "video")
+    make_stream_file(directory / "part001.f140.mkv", 5, "audio")
+    (directory / "part001.f140.mkv.ytdl").write_text("{}")
+    (directory / "part001.f140.mkv-Frag9").write_bytes(b"partial")
+    out, seconds = live.finalize_parts(tmp_path)
+    streams = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+         "-of", "csv=p=0", str(out)], capture_output=True, text=True,
+        check=True).stdout.split()
+    assert sorted(streams) == ["audio", "video"]
+    assert duration(out) == pytest.approx(3.0, abs=0.6)  # cut to the shorter
+    assert list(directory.iterdir()) == [], "parts and yt-dlp leftovers removed"
 
 
 def test_finalize_without_media_raises(tmp_path):

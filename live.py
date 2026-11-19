@@ -26,6 +26,7 @@ Command line (manual use / testing):
 """
 import argparse
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -110,21 +111,49 @@ def recording_dir(project_dir):
     return Path(project_dir) / RECORDING_DIR
 
 
-def part_files(project_dir):
-    """Finished or in-progress media parts, oldest first.
+# From-start mode downloads video and audio separately (part001.f399.mkv +
+# part001.f140.mkv) and yt-dlp only merges them when it exits normally. A
+# stopped from-start recording therefore leaves these per-stream files;
+# they are real media and Finalize merges them. In-progress fragments
+# ("-Frag12") and resume state (".ytdl") are not media.
+_STREAM_FILE = re.compile(r"^part\d{3}\.f[0-9A-Za-z_-]+\.(mkv|mp4|webm|m4a)$",
+                          re.IGNORECASE)
 
-    yt-dlp intermediates (``part001.f137.mp4``) and ``.part`` files from the
-    experimental from-start mode are not complete parts and are skipped.
+
+def part_groups(project_dir):
+    """Recorded parts, oldest first, as lists of files.
+
+    A complete part is ``[partNNN.ext]``. A from-start part that was stopped
+    before yt-dlp merged it is ``[partNNN.fVIDEO.ext, partNNN.fAUDIO.ext]``.
     """
     directory = recording_dir(project_dir)
     if not directory.is_dir():
         return []
-    found = []
+    groups = {}
     for path in sorted(directory.glob("part[0-9][0-9][0-9].*")):
-        if (path.is_file() and path.suffix.lower() in PART_EXTS
-                and path.name.count(".") == 1 and path.stat().st_size > 0):
-            found.append(path)
-    return found
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        group = groups.setdefault(path.name[:7], {"complete": None, "streams": []})
+        if path.name.count(".") == 1 and path.suffix.lower() in PART_EXTS:
+            group["complete"] = path
+        elif _STREAM_FILE.match(path.name):
+            group["streams"].append(path)
+    result = []
+    for stem in sorted(groups):
+        group = groups[stem]
+        if group["complete"] is not None:
+            result.append([group["complete"]])
+        elif group["streams"]:
+            result.append(sorted(group["streams"]))
+    return result
+
+
+def part_files(project_dir):
+    """Every recorded media file (complete parts and unmerged streams)."""
+    return [path for group in part_groups(project_dir) for path in group]
 
 
 def _part_bytes(directory, stem):
@@ -144,9 +173,12 @@ def build_command(url, out_stem, settings):
               "--newline", "--retries", "10", "--fragment-retries", "10"]
     if settings["from_start"]:
         # DASH fragments from the start of the DVR window, merged at the end.
+        # Prefer H.264 + AAC: YouTube otherwise picks AV1, which is slower to
+        # decode during clip detection and rendering.
         return common + [
             "--live-from-start",
-            "-f", f"bv*[height<={height}]+ba/b[height<={height}]/b",
+            "-f", (f"bv*[height<={height}][vcodec^=avc1]+ba[ext=m4a]/"
+                   f"bv*[height<={height}]+ba/b[height<={height}]/b"),
             "--merge-output-format", "mkv",
             "-o", str(out_stem) + ".%(ext)s", url]
     # Recording from now. YouTube serves live video and audio as separate HLS
@@ -404,11 +436,19 @@ def finalize_parts(project_dir, keep_parts=False, runner=None):
     """
     run = runner or ingest._run
     project_dir = Path(project_dir)
-    usable, total, shapes = [], 0.0, set()
-    for part in part_files(project_dir):
-        duration, shape = _ffprobe(part, run)
+    usable, total, shapes, originals, temps = [], 0.0, set(), [], []
+    for group in part_groups(project_dir):
+        if len(group) == 1:
+            source = group[0]
+        else:
+            source = _mux_streams(group, run)
+            if source is None:
+                continue
+            temps.append(source)
+        duration, shape = _ffprobe(source, run)
         if duration and duration > 0:
-            usable.append(part)
+            usable.append(source)
+            originals.extend(group)
             total += duration
             shapes.add(shape)
     if not usable:
@@ -455,6 +495,11 @@ def finalize_parts(project_dir, keep_parts=False, runner=None):
         output = project_dir / f"{OUTPUT_STEM}{suffix}"
         os.replace(temp, output)
         break
+    for temp in temps:  # merged copies of unmerged parts; originals remain
+        try:
+            temp.unlink()
+        except OSError:
+            pass
     if output is None:
         raise RecordingError(f"Could not join the recording: {last_error}")
     try:
@@ -462,12 +507,48 @@ def finalize_parts(project_dir, keep_parts=False, runner=None):
     except OSError:
         pass
     if not keep_parts:
-        for part in usable:
-            try:
-                part.unlink()
-            except OSError:
-                pass
+        stems = {path.name[:7] for path in originals}
+        for path in list(recording_dir(project_dir).iterdir()):
+            # The verified parts plus yt-dlp leftovers (-FragN, .ytdl) of them.
+            if path.is_file() and (path in originals or (
+                    path.name[:7] in stems and (
+                        ".ytdl" in path.name or "-Frag" in path.name))):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
     return output, round(total, 2)
+
+
+def _mux_streams(files, run):
+    """Merge a stopped from-start part's separate video and audio files.
+
+    Stream copy only (no re-encode); the result is cut to the shorter stream
+    so picture and sound stay in sync. Returns the merged file or None.
+    """
+    video = audio = None
+    for path in files:
+        _, shape = _ffprobe(path, run)
+        if shape and shape[0]:
+            video = video or path
+        else:
+            audio = audio or path
+    if video is None and audio is None:
+        return None
+    if video is None or audio is None:
+        return video or audio
+    out = video.parent / f"merged_{video.name[:7]}.mkv"
+    try:
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+             "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest",
+             "-f", "matroska", str(out)])
+    except (OSError, subprocess.SubprocessError):
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        return video
+    return out
 
 
 # --------------------------------------------------------------- recorder
@@ -566,8 +647,14 @@ class Recorder:
                         message="Studio closed during recording. Resume to "
                                 "record more, or Finalize to use what exists.")
             return "interrupted"
-        if part_files(self.path):
+        if part_groups(self.path):
             return self._finalize(outcome, settings)
+        if int(self.recording().get("bytes") or 0) > 0:
+            # Bytes arrived but no usable media file is left: never claim
+            # that nothing was recorded.
+            return self._fail("Data was downloaded but no playable media file "
+                              "was found. See recording.log.",
+                              stop_reason=outcome)
         if outcome == "stopped":
             self.update(status="new", state="stopped", pid=None,
                         stop_reason="stopped",
@@ -674,13 +761,19 @@ class Recorder:
         part = {"file": stem.name, "started": self.wall(), "ended": None,
                 "bytes": 0, "seconds": 0.0, "exit": None, "reason": None}
         self._fatal_message = None
+        # Only the first part may start from the beginning of the stream. A
+        # reconnect or Resume continues from "now"; downloading from the start
+        # again would duplicate everything already recorded.
+        part_settings = dict(settings)
+        if parts:
+            part_settings["from_start"] = False
         with log_path.open("a", encoding="utf-8", errors="replace") as log:
             log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} "
                       f"{stem.name} ===\n")
             log.flush()
             log_start = log.tell()
             try:
-                handle = self.spawn(build_command(url, stem, settings), log,
+                handle = self.spawn(build_command(url, stem, part_settings), log,
                                     str(self.path))
             except OSError as exc:
                 raise RecordingError(f"Could not start the downloader: {exc}")
@@ -725,7 +818,8 @@ class Recorder:
                 code = handle.stop(grace)
             elif hasattr(handle, "close"):
                 handle.close()
-        size = max(0, _part_bytes(stem.parent, stem.name))
+        # Bytes downloaded = the most ever seen (files may shrink or vanish).
+        size = max(0, last_size, _part_bytes(stem.parent, stem.name))
         part_seconds = round(self.clock() - first_byte, 1) if first_byte else 0.0
         if reason == "exited" and code and not size:
             try:
@@ -771,7 +865,7 @@ def finalize_existing(project_dir, finalize=finalize_parts):
     recorder = Recorder(project_dir, finalize=finalize)
     rec = recorder.recording()
     settings = validate_settings(rec.get("settings"))
-    if not part_files(project_dir):
+    if not part_groups(project_dir):
         raise RecordingError("There is no recorded media to finalize.")
     return recorder._finalize(rec.get("stop_reason") or "stopped", settings)
 

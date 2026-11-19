@@ -53,7 +53,7 @@ def project_detail(root, project_id):
     source_url = (recording or {}).get("url") or state.get("source_url")
     data.update({
         "recording": recording,
-        "recording_parts": len(live.part_files(path)) if recording else 0,
+        "recording_parts": len(live.part_groups(path)) if recording else 0,
         "source_kind": (ingest.describe_source(source_meta)
                         if source_meta and not recording else None),
         "can_record": bool(ingest.is_url(source_url or state.get("source", ""))
@@ -136,6 +136,15 @@ class Studio:
             if not after_recording and self.jobs.busy(project_id, "record"):
                 raise ValueError("Stop the recording before finding clips.")
             state = projects.read_project(path)
+            rec = state.get("recording")
+            if (not after_recording and isinstance(rec, dict)
+                    and rec.get("state") != "recorded"
+                    and live.part_groups(path)):
+                # The source is still the live URL; processing it would fail
+                # with a confusing "stream is live" error.
+                raise ValueError("This recording is not finalized yet. Use "
+                                 "Finalize recording (or Resume recording) "
+                                 "first; clips are found automatically after.")
             state.update(status="queued", stage=action, error=None)
             projects.save_project(path, state)
             self.cancelled.discard(project_id)
@@ -209,7 +218,7 @@ class Studio:
             path = projects.project_path(self.root, project_id)
             if self.busy(project_id):
                 raise ValueError("Wait for this project's current job to finish.")
-            if not live.part_files(path):
+            if not live.part_groups(path):
                 raise ValueError("There is no recorded media to finalize.")
             return self.jobs.submit("record", project_id, self._finalize_recording,
                                     path, kind="finalize")

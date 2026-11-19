@@ -189,8 +189,14 @@ def main():
                     help="caption preset: " + ", ".join(render_clips.CAPTION_STYLES))
     ap.add_argument("--tighten", action="store_true",
                     help="remove filler words (um, uh...) and long silences")
-    ap.add_argument("--loudnorm", action="store_true",
-                    help="normalize audio to -14 LUFS (platform standard)")
+    ap.add_argument("--loudnorm", action=argparse.BooleanOptionalAction, default=True,
+                    help="normalize audio to -14 LUFS, two-pass (default on; "
+                         "--no-loudnorm keeps the original levels)")
+    ap.add_argument("--framing", choices=["auto", "track", "center", "fit"],
+                    default="auto",
+                    help="vertical/square framing: auto (default) follows faces "
+                         "and keeps wide gameplay shots whole; track, center "
+                         "or fit force one style")
     ap.add_argument("--llm", nargs="?", const="qwen2.5:3b", default="qwen2.5:3b",
                     metavar="MODEL",
                     help="AI judge model via the LLM provider (default "

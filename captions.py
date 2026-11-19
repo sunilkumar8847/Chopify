@@ -43,14 +43,42 @@ def srt_time(seconds):
     return f"{hours:02}:{minutes:02}:{seconds:02},{ms:03}"
 
 
-def write_srt(words, start, end, path, group_size=8):
+SENTENCE_END = (".", "!", "?", "…", "।", "॥")
+CUE_PAUSE = 1.0   # seconds of silence that always start a new caption cue
+
+
+def group_words(selected, group_size, max_chars=None, pause=CUE_PAUSE):
+    """Split words into caption cues (shared by the burned-in ASS and the SRT).
+
+    A cue ends after ``group_size`` words, before a word that would push it
+    past ``max_chars`` (so vertical captions stay on one line), after the end
+    of a sentence, and before a pause longer than ``pause`` seconds, so a
+    caption never lingers over silence or mixes two sentences.
+    """
+    groups, current = [], []
+    for word in selected:
+        if current:
+            text = " ".join(w["word"].strip() for w in current + [word])
+            gap = float(word["start"]) - float(current[-1]["end"])
+            if (len(current) >= group_size
+                    or (max_chars and len(text) > max_chars)
+                    or current[-1]["word"].strip().endswith(SENTENCE_END)
+                    or gap > pause):
+                groups.append(current)
+                current = []
+        current.append(word)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def write_srt(words, start, end, path, group_size=8, max_chars=None):
     if isinstance(group_size, bool) or not isinstance(group_size, int) or not 1 <= group_size <= 100:
         raise ValueError("Caption group size must be an integer from 1 to 100.")
     selected = [w for w in words
                 if not w.get("hidden") and w["end"] > start and w["start"] < end]
     blocks = []
-    for i in range(0, len(selected), group_size):
-        group = selected[i:i + group_size]
+    for group in group_words(selected, group_size, max_chars):
         a = max(start, group[0]["start"]) - start
         b = min(end, group[-1]["end"]) - start
         text = " ".join(w["word"].strip() for w in group)

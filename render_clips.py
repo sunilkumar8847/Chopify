@@ -31,10 +31,30 @@ import tighten  # local module: filler/silence removal
 # aspect -> (target_w, target_h, caption_font_size, caption_margin_v)
 ASPECTS = {
     "16:9": (1920, 1080, 72, 95),
-    "9:16": (1080, 1920, 96, 300),
+    "9:16": (1080, 1920, 88, 480),
     "1:1":  (1080, 1080, 82, 120),
 }
 DEFAULT_ASPECT = "16:9"
+
+# Phase 4: caption safe areas as fractions of the output frame (see
+# caption_geometry). 16:9 keeps its original fixed margins.
+SAFE_AREAS = {
+    "9:16": {"top": 0.13, "bottom": 0.25, "side": 0.13},
+    "1:1": {"top": 0.08, "bottom": 0.11, "side": 0.09},
+}
+# Where the full-frame picture sits in "fit" framing (centre, as a fraction of
+# the height): a little high on 9:16 so captions fit underneath it.
+FIT_BAND_CENTER = {"9:16": 0.40, "1:1": 0.42}
+LOUDNESS = {"I": -14, "TP": -1.5, "LRA": 11}   # platform loudness target
+FINAL_ENCODE = {"preset": "fast", "crf": 18, "audio": "192k",
+                "nvenc_preset": "p5", "cq": 19}
+PREVIEW_ENCODE = {"preset": "veryfast", "crf": 26, "audio": "128k",
+                  "nvenc_preset": "p3", "cq": 26}
+# Video encoder: "auto" uses the NVIDIA hardware encoder when it works (about
+# 6x faster here, same quality on a measured GTA clip) and libx264 otherwise.
+# Set CHOPIFY_ENCODER=x264 or nvenc to force one.
+_ENCODER_CACHE = {}
+SHORTS_STYLE = "shorts"
 
 # --preview drafts: small, fast, no poster/meta. Caption font/margins scale down
 # proportionally from the full-size ASPECTS values (height is the anchor).
@@ -134,6 +154,14 @@ CAPTION_STYLES = {
         "highlight": "#00FF00", "emphasis_color": "#FFD400",
         "outline_color": "#000000", "uppercase": False, "words_per_cue": 2,
         "position": "bottom", "outline": 5, "shadow": 2, "background": "none",
+        "animation": "pop", "highlight_mode": "word",
+    },
+    # Phase 4 default for 9:16: bold, animated active word, 3 words per cue.
+    "shorts": {
+        "font": "Arial Black", "weight": -1, "color": "#FFFFFF",
+        "highlight": "#FFE600", "emphasis_color": "#FFE600",
+        "outline_color": "#000000", "uppercase": True, "words_per_cue": 3,
+        "position": "bottom", "outline": 6, "shadow": 3, "background": "none",
         "animation": "pop", "highlight_mode": "word",
     },
     "podcast": {
@@ -309,21 +337,9 @@ def crop_for(W, H, tw, th):
 
 
 def _make_detector(workdir):
-    import cv2
-    model = Path(workdir).parent / "yunet.onnx"
-    if not model.exists():
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(YUNET_URL, str(model))
-        except Exception as e:
-            print("  YuNet download failed -> Haar:", e, flush=True)
-    if model.exists():
-        try:
-            return "yunet", cv2.FaceDetectorYN.create(str(model), "", (DET_W, 360), 0.6, 0.3, 5000)
-        except Exception as e:
-            print("  YuNet init failed -> Haar:", e, flush=True)
-    return "haar", cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    """Kept for compatibility; framing.make_detector downloads atomically."""
+    import framing
+    return framing.make_detector(legacy=Path(workdir).parent / "yunet.onnx")
 
 
 def detect_track(source, start, dur, W, workdir):
@@ -429,7 +445,8 @@ def ass_escape(s):
 
 
 def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
-              style_name=DEFAULT_STYLE, brand=None, caption=None):
+              style_name=DEFAULT_STYLE, brand=None, caption=None, margin_lr=80,
+              max_chars=None):
     st = resolve_caption(style_name, brand, caption)
     color = ass_style_color(st["color"])
     highlight = ass_style_color(st["highlight"])
@@ -462,13 +479,14 @@ def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
         "MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Cap,{st['font']},{font_size},{color},{color},{outline_colour},"
         f"{back_colour},{st['weight']},0,0,0,100,100,0,0,{border_style},"
-        f"{outline_px},{shadow_px},{alignment},80,80,{margin_v},1\n\n"
+        f"{outline_px},{shadow_px},{alignment},{margin_lr},{margin_lr},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n"
     )
     group_size = int(st["words_per_cue"] or WORDS_PER_LINE)
-    groups = [sub[i:i + group_size] for i in range(0, len(sub), group_size)]
+    from captions import group_words
+    groups = group_words(sub, group_size, max_chars)
     animation = st["animation"]
     events = []
     for group in groups:
@@ -504,7 +522,7 @@ def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
     Path(path).write_text(header + "\n".join(events) + "\n", encoding="utf-8")
 
 
-def write_meta(seg, out_path):
+def write_meta(seg, out_path, render_info=None):
     """Deterministic ready-to-post metadata saved as <clip>.meta.json."""
     hook = str(seg.get("hook", "clip")).replace("-", " ").strip()
     title = hook.capitalize()
@@ -517,6 +535,8 @@ def write_meta(seg, out_path):
         "start": seg.get("start"),
         "end": seg.get("end"),
     }
+    if render_info:
+        meta["render"] = render_info
     Path(out_path).with_suffix(".meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return Path(out_path).with_suffix(".meta.json")
@@ -593,19 +613,238 @@ def caption_from_args(args):
     return branding.validate_caption(caption) if supplied else None
 
 
+def _even(value):
+    value = int(round(value))
+    return max(2, value - value % 2)
+
+
+def caption_geometry(aspect, tw, th, position, margin_v):
+    """(margin_v, side_margin) keeping captions inside the platform safe area.
+
+    9:16 (Shorts/Reels/TikTok): the bottom ~22% holds the title, channel and
+    music line, the right edge holds the like/comment/share buttons and the
+    top ~10% the search bar, so captions sit at 75% height with wide sides.
+    """
+    safe = SAFE_AREAS.get(aspect)
+    if not safe:
+        return margin_v, 80
+    if position == "top":
+        margin = round(safe["top"] * th)
+    elif position == "center":
+        margin = 0
+    else:
+        margin = round(safe["bottom"] * th)
+    return margin, round(safe["side"] * tw)
+
+
+def line_chars(aspect, tw, side, style, font_size, th):
+    """Characters that fit on one caption line (vertical/square only).
+
+    A rough width model for bold sans fonts; uppercase is wider. 16:9 has room
+    for the full cue, so it returns None and keeps the original grouping.
+    """
+    if aspect not in SAFE_AREAS:
+        return None
+    size = style.get("font_size")
+    size = max(12, round(size * th / 1080)) if size is not None else font_size
+    per_char = size * (0.66 if style.get("uppercase") else 0.56)
+    return max(8, int((tw - 2 * side) / per_char))
+
+
+def pick_encoder():
+    """"nvenc" or "x264" (cached; a tiny test encode decides "auto")."""
+    wanted = (os.environ.get("CHOPIFY_ENCODER") or "auto").strip().lower()
+    if wanted in ("x264", "libx264"):
+        return "x264"
+    if "result" not in _ENCODER_CACHE:
+        try:
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                 "color=c=black:s=256x256:d=0.2", "-c:v", "h264_nvenc",
+                 "-f", "null", "-"],
+                check=True, capture_output=True, timeout=30)
+            _ENCODER_CACHE["result"] = "nvenc"
+        except (OSError, subprocess.SubprocessError):
+            _ENCODER_CACHE["result"] = "x264"
+    return _ENCODER_CACHE["result"]
+
+
+def video_codec_args(encoder, quality):
+    if encoder == "nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", quality["nvenc_preset"],
+                "-tune", "hq", "-rc", "vbr", "-cq", str(quality["cq"]),
+                "-b:v", "0", "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", quality["preset"],
+            "-crf", str(quality["crf"]), "-profile:v", "high",
+            "-pix_fmt", "yuv420p"]
+
+
+def probe_media(path):
+    """{"fps", "has_audio"} for a source file (best effort)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,avg_frame_rate", "-of", "json", str(path)],
+            capture_output=True, text=True, check=True).stdout
+        streams = json.loads(out).get("streams", [])
+    except (OSError, TypeError, ValueError, subprocess.CalledProcessError):
+        return {"fps": None, "has_audio": True}
+    fps = None
+    for stream in streams:
+        if stream.get("codec_type") == "video":
+            num, _, den = str(stream.get("avg_frame_rate", "0/1")).partition("/")
+            try:
+                fps = float(num) / float(den or 1)
+            except (ValueError, ZeroDivisionError):
+                fps = None
+            break
+    return {"fps": fps if fps and fps > 0 else None,
+            "has_audio": any(s.get("codec_type") == "audio" for s in streams)}
+
+
+def measure_loudness(path, start, duration):
+    """First loudnorm pass: measured values, or None if unusable/silent."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-ss", f"{start:.3f}", "-i", str(path),
+             "-t", f"{duration:.3f}", "-vn", "-af",
+             f"loudnorm=I={LOUDNESS['I']}:TP={LOUDNESS['TP']}:LRA={LOUDNESS['LRA']}"
+             ":print_format=json", "-f", "null", "-"],
+            capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    text = result.stderr
+    begin, end = text.rfind("{"), text.rfind("}")
+    if begin < 0 or end < begin:
+        return None
+    try:
+        data = json.loads(text[begin:end + 1])
+        values = {key: float(data[key]) for key in (
+            "input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not all(math.isfinite(v) for v in values.values()) or values["input_i"] < -70:
+        return None                        # silence: nothing to normalize
+    return values
+
+
+def loudnorm_filter(measured):
+    """Second loudnorm pass (linear, so dynamics are kept) or the one-pass filter."""
+    base = f"loudnorm=I={LOUDNESS['I']}:TP={LOUDNESS['TP']}:LRA={LOUDNESS['LRA']}"
+    if not measured:
+        return base
+    return (base + f":measured_I={measured['input_i']:.2f}"
+            f":measured_TP={measured['input_tp']:.2f}"
+            f":measured_LRA={measured['input_lra']:.2f}"
+            f":measured_thresh={measured['input_thresh']:.2f}"
+            f":offset={measured['target_offset']:.2f}:linear=true")
+
+
+def verify_output(path, width, height, duration, expect_audio=True, tolerance=0.35):
+    """ffprobe the finished clip; returns {"ok": bool, "problems": [...], ...}."""
+    report = {"ok": False, "problems": []}
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,"
+             "sample_rate,channels", "-of", "json", str(path)],
+            capture_output=True, text=True, check=True).stdout
+        data = json.loads(out)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        report["problems"].append(f"ffprobe failed: {exc}")
+        return report
+    except (TypeError, ValueError):
+        # ffprobe ran but printed nothing readable: cannot judge, do not fail
+        return {"ok": None, "problems": [], "unchecked": True}
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    actual = float((data.get("format") or {}).get("duration") or 0)
+    report.update(duration=round(actual, 3), width=video and video.get("width"),
+                  height=video and video.get("height"),
+                  video_codec=video and video.get("codec_name"),
+                  audio_codec=audio and audio.get("codec_name"),
+                  sample_rate=audio and int(audio.get("sample_rate") or 0))
+    if video is None:
+        report["problems"].append("no video stream")
+    elif (video.get("width"), video.get("height")) != (width, height):
+        report["problems"].append(
+            f"size {video.get('width')}x{video.get('height')}, expected {width}x{height}")
+    if expect_audio and audio is None:
+        report["problems"].append("no audio stream")
+    if abs(actual - duration) > tolerance:
+        report["problems"].append(
+            f"duration {actual:.2f}s, expected {duration:.2f}s")
+    report["ok"] = not report["problems"]
+    return report
+
+
+def active_area(H, bars):
+    """(top_px, height_px) of the picture without letterbox bars."""
+    top, bottom = bars or (0.0, 0.0)
+    if not top and not bottom:
+        return 0, H
+    top_px = _even(top * H) if top else 0
+    height = _even(H - top_px - (bottom * H))
+    return top_px, height
+
+
+def _fit_graph(src_label, out_label, W, H, tw, th, band_center, bars=None):
+    """Whole frame scaled to the output width over a blurred, dimmed fill."""
+    bw, bh = _even(tw / 8), _even(th / 8)
+    top_px, active_h = active_area(H, bars)
+    fg_h = _even(tw * active_h / float(W))
+    y = max(0, min(th - fg_h, _even(th * band_center - fg_h / 2)))
+    trim = f"crop={W}:{active_h}:0:{top_px}," if active_h != H else ""
+    return (f"{src_label}{trim}split=2[fitbg][fitfg];"
+            f"[fitbg]scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+            f"crop={bw}:{bh},gblur=sigma=4,scale={tw}:{th},"
+            f"eq=brightness=-0.10:saturation=1.15[fitblur];"
+            f"[fitfg]scale={tw}:{fg_h}[fitfront];"
+            f"[fitblur][fitfront]overlay=0:{y}{out_label}")
+
+
+def _track_graph(src_label, out_label, cmd_name, cw, ch, x, y0, tw, th):
+    return (f"{src_label}sendcmd=f={cmd_name},crop@track={cw}:{ch}:{x}:{y0},"
+            f"scale={tw}:{th}{out_label}")
+
+
+def _facecam_graph(src_label, out_label, W, H, tw, th, cam):
+    """Webcam on top (about a third), gameplay below."""
+    top_h = _even(th * 0.36)
+    bottom_h = th - top_h
+    x, y, fw, fh = cam
+    region_w = min(W, fw * W * 4.0)
+    region_h = min(H, region_w * top_h / float(tw))
+    region_w = region_h * tw / float(top_h)
+    rx = max(0, min(W - region_w, x * W - region_w / 2))
+    ry = max(0, min(H - region_h, y * H - region_h / 2))
+    gw, gh, gx, gy = crop_for(W, H, tw, bottom_h)
+    return (f"{src_label}split=2[camsrc][gamesrc];"
+            f"[camsrc]crop={_even(region_w)}:{_even(region_h)}:{int(rx)}:{int(ry)},"
+            f"scale={tw}:{top_h}[camtop];"
+            f"[gamesrc]crop={gw}:{gh}:{gx}:{gy},scale={tw}:{bottom_h}[gamebottom];"
+            f"[camtop][gamebottom]vstack=inputs=2{out_label}")
+
+
 def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAULT_STYLE,
            do_tighten=False, loudnorm=False, preview=False, brand=None,
            layout="single", centers=(0.25, 0.75), caption=None,
-           source_offset=0.0):
+           source_offset=0.0, framing_mode="auto"):
+    import framing
     from captions import write_srt
     out_dir = (Path(out_dir) if out_dir else default_out()).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     source = Path(source).resolve()
+    if (aspect == "9:16" and style == DEFAULT_STYLE and not brand and not caption):
+        style = SHORTS_STYLE            # animated, safe-area captions for Shorts
     resolved = resolve_caption(style, brand, caption)
     if layout not in {"single", "split"} or (layout == "split" and aspect != "9:16"):
         raise ValueError("Split-screen requires vertical 9:16 output.")
     if len(centers) != 2 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in centers):
         raise ValueError("Speaker centers must be between 0 and 1.")
+    if framing_mode not in framing.MODES:
+        raise ValueError("Framing must be auto, track, center or fit.")
     full_w, full_h, font_size, margin_v = ASPECTS[aspect]
     if preview:
         # fast 480p-class draft: smaller frame, smaller captions, no poster/meta
@@ -627,12 +866,15 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         raise ValueError("Clip start precedes its source section.")
     local_start = max(0.0, start - offset)
     cw, ch, x0, y0 = crop_for(W, H, tw, th)
+    # Per-clip temporary names: two renders into one folder never collide.
+    tag = sanitize(str(seg.get("id") or seg.get("hook") or "clip"), 40)
+    ass_name, cmd_name = f"_caption-{tag}.ass", f"_crop-{tag}.cmd"
 
     cap_words = words
     render_src = source
     if do_tighten:
         keeps = tighten.plan_cuts(words, start, end)
-        render_src = out_dir / "_tight_source.mp4"
+        render_src = out_dir / f"_tight-{tag}.mp4"
         tighten.apply_cuts(source, keeps, start, render_src,
                            source_offset=offset)
         cap_words, dur = tighten.remap_words(words, start, keeps)
@@ -640,61 +882,118 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
               f"{(end - start) - dur:.1f}s removed", flush=True)
         start = 0.0
         local_start = 0.0
-    build_ass(cap_words, start, start + dur, out_dir / "_caption.ass",
-              tw, th, font_size, margin_v, style, brand, caption)
 
-    needs_track = cw < W * 0.95          # real horizontal crop -> track the speaker
+    # ---- framing: decide how the picture fills the output frame
+    plan = {"mode": "full", "stats": {}}
+    reframe = cw < W * 0.95
     if layout == "split":
+        plan = {"mode": "split", "centers": tuple(centers), "stats": {"manual": True}}
+    elif reframe:
+        if framing_mode in ("center", "fit"):
+            plan = framing.plan({}, dur, cw / float(W), framing_mode)
+        else:
+            analysis = framing.analyze(render_src, local_start, dur, workdir,
+                                       legacy_model=Path(workdir).parent / "yunet.onnx")
+            plan = framing.plan(analysis, dur, cw / float(W), framing_mode)
+    mode = plan["mode"]
+    bars = (plan.get("bars") or {})
+    if mode in ("track", "mixed") and any(bars.get("crop") or ()):
+        # crop inside the picture, not the letterbox bars around it
+        top_px, active_h = active_area(H, bars["crop"])
+        cw, ch, x0, y0 = crop_for(W, active_h, tw, th)
+        y0 += top_px
+
+    # ---- captions: one consistent position inside the safe area
+    margin_v, side = caption_geometry(aspect, tw, th, resolved["position"], margin_v)
+    max_chars = line_chars(aspect, tw, side, resolved, font_size, th)
+    build_ass(cap_words, start, start + dur, out_dir / ass_name,
+              tw, th, font_size, margin_v, style, brand, caption, margin_lr=side,
+              max_chars=max_chars)
+
+    # ---- picture graph -> [base]
+    if mode == "split":
         # Keep every YUV420 panel even-sized. Older libass/ffmpeg builds can
         # crash on odd-height intermediate frames (854px drafts / 2 = 427).
         panel_h = (th // 4) * 2
         pcw, pch, _, py = crop_for(W, H, tw, panel_h)
-        positions = [max(0, min(W - pcw, round(W * c - pcw / 2))) for c in centers]
-        vf = (f"[0:v]split=2[a][b];[a]crop={pcw}:{pch}:{positions[0]}:{py},"
-              f"scale={tw}:{panel_h}[top];[b]crop={pcw}:{pch}:{positions[1]}:{py},"
-              f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
-              f"pad={tw}:{th}:0:0,subtitles=_caption.ass")
-        mode = "podcast split-screen"
-    elif needs_track:
-        track = smooth_track(detect_track(render_src, local_start, dur, W, workdir), W, cw)
-        build_sendcmd(track, cw, out_dir / "_crop.cmd")
-        init_x = max(0, min(int(round(track[0][1] - cw / 2.0)), W - cw))
-        vf = (f"sendcmd=f=_crop.cmd,crop={cw}:{ch}:{init_x}:{y0},"
-              f"scale={tw}:{th},subtitles=_caption.ass")
-        mode = "speaker-tracked"
-    else:
-        vf = f"crop={cw}:{ch}:{x0}:{y0},scale={tw}:{th},subtitles=_caption.ass"
-        mode = "full-frame"
+        split_centers = plan.get("centers") or centers
+        positions = [max(0, min(W - pcw, round(W * c - pcw / 2))) for c in split_centers]
+        graph = (f"[0:v]split=2[a][b];[a]crop={pcw}:{pch}:{positions[0]}:{py},"
+                 f"scale={tw}:{panel_h}[top];[b]crop={pcw}:{pch}:{positions[1]}:{py},"
+                 f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
+                 f"pad={tw}:{th}:0:0[base]")
+        label = "podcast split-screen"
+    elif mode in ("track", "mixed"):
+        lines = framing.sendcmd_lines(plan.get("path"), cw, W)
+        (out_dir / cmd_name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        first = int(lines[0].split()[-1].rstrip(";")) if lines else x0
+        if mode == "track":
+            graph = _track_graph("[0:v]", "[base]", cmd_name, cw, ch, first, y0, tw, th)
+            label = "speaker-tracked"
+        else:
+            windows = plan.get("segments") or []
+            enable = "+".join(f"between(t,{a:.2f},{b:.2f})" for a, b in windows) or "0"
+            graph = ("[0:v]split=2[mixcrop][mixfit];"
+                     + _track_graph("[mixcrop]", "[tracked]", cmd_name, cw, ch, first,
+                                    y0, tw, th) + ";"
+                     + _fit_graph("[mixfit]", "[fitted]", W, H, tw, th,
+                                  FIT_BAND_CENTER.get(aspect, 0.5),
+                                  bars.get("fit")) + ";"
+                     + f"[fitted][tracked]overlay=0:0:enable='{enable}'[base]")
+            label = "mixed: tracked faces, full frame for wide shots"
+    elif mode == "fit":
+        graph = _fit_graph("[0:v]", "[base]", W, H, tw, th,
+                           FIT_BAND_CENTER.get(aspect, 0.5), bars.get("fit"))
+        label = "full frame on blurred fill"
+    elif mode == "facecam":
+        graph = _facecam_graph("[0:v]", "[base]", W, H, tw, th, plan["facecam"])
+        label = "facecam on top, gameplay below"
+    else:  # "full" (same shape) or "center"
+        graph = f"[0:v]crop={cw}:{ch}:{x0}:{y0},scale={tw}:{th}[base]"
+        label = "full-frame" if mode == "full" else "centre crop"
+    graph += f";[base]subtitles={ass_name}"
 
     suffix = ".preview" if preview else ""
     prefix = sanitize(str(seg["id"])) + "-" if seg.get("id") else ""
     out = out_dir / (prefix + sanitize(seg.get("hook", "clip")) + suffix + ".mp4")
-    cmd = ["ffmpeg", "-y", "-ss", f"{local_start:.3f}", "-i", str(render_src),
-           "-t", f"{dur:.3f}",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
+    inputs = ["-ss", f"{local_start:.3f}", "-i", str(render_src)]
     if brand and brand.get("logo"):
         width = max(20, round(brand["logo_width"] * tw / 1920))
-        if layout == "single":
-            vf = "[0:v]" + vf
-        graph = (vf + f"[captioned];[1:v]scale={width}:-1[logo];"
-                 "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
-        pos = cmd.index("-t")
-        cmd[pos:pos] = ["-i", brand["logo"]]
-        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
-    elif layout == "split":
-        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf + "[v]", "-map", "[v]", "-map", "0:a?"]
+        inputs += ["-i", brand["logo"]]
+        graph += (f"[captioned];[1:v]scale={width}:-1[logo];"
+                  "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
     else:
-        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-vf", vf]
-    if loudnorm:
-        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = [
-            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
+        graph += "[v]"
+    quality = PREVIEW_ENCODE if preview else FINAL_ENCODE
+    encoder = pick_encoder()
+    head = ["ffmpeg", "-y"] + inputs + ["-t", f"{dur:.3f}",
+                                        "-filter_complex", graph, "-map", "[v]",
+                                        "-map", "0:a?"]
+    tail = ["-fpsmax", "60",
+            # a keyframe every 2 s: clean seeking and platform-friendly GOPs
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-c:a", "aac", "-b:a", quality["audio"], "-ar", "48000", "-ac", "2"]
+    loudness = None
+    has_audio = probe_media(render_src)["has_audio"] if loudnorm else None
+    if loudnorm and has_audio:
+        loudness = measure_loudness(render_src, local_start, dur)
+        tail += ["-af", loudnorm_filter(loudness) + ",aresample=48000"]
+    tail += ["-movflags", "+faststart", str(out)]
+    cmd = head + video_codec_args(encoder, quality) + tail
     print(">", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True, cwd=str(out_dir))
+    try:
+        subprocess.run(cmd, check=True, cwd=str(out_dir))
+    except subprocess.CalledProcessError:
+        if encoder != "nvenc":
+            raise
+        print("  Hardware encoder failed; encoding with libx264 instead.", flush=True)
+        encoder = "x264"
+        cmd = head + video_codec_args(encoder, quality) + tail
+        subprocess.run(cmd, check=True, cwd=str(out_dir))
     write_srt(cap_words, start, start + dur, out.with_suffix(".srt"),
-              group_size=resolved["words_per_cue"])
+              group_size=resolved["words_per_cue"], max_chars=max_chars)
 
-    for tmpf in (out_dir / "_caption.ass", out_dir / "_crop.cmd"):
+    for tmpf in (out_dir / ass_name, out_dir / cmd_name):
         try:
             tmpf.unlink()
         except OSError:
@@ -706,9 +1005,15 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         except OSError:
             pass
 
+    if has_audio is None:
+        has_audio = probe_media(render_src)["has_audio"]
+    check = verify_output(out, tw, th, dur, expect_audio=has_audio)
+    if check["ok"] is False:
+        raise ValueError(f"Rendered clip failed its check: {'; '.join(check['problems'])}")
+
     if preview:
         # drafts skip the poster and metadata - they exist to be eyeballed fast
-        print(f"SAVED {out}  ({aspect} {tw}x{th} preview, {mode})", flush=True)
+        print(f"SAVED {out}  ({aspect} {tw}x{th} preview, {label})", flush=True)
         return out
 
     # poster: a representative still saved next to the clip (<clip>.png)
@@ -716,9 +1021,20 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     subprocess.run(["ffmpeg", "-y", "-ss", f"{dur * 0.4:.2f}", "-i", str(out),
                     "-frames:v", "1", "-q:v", "2", str(poster)],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    meta_path = write_meta(seg, out)
+    render_info = {
+        "framing": {"mode": mode, "label": label,
+                    "face_shots": plan.get("segments") or None,
+                    **(plan.get("stats") or {})},
+        "loudness": ({"target_lufs": LOUDNESS["I"], "two_pass": bool(loudness),
+                      "measured_lufs": loudness and round(loudness["input_i"], 1)}
+                     if loudnorm and has_audio else None),
+        "verified": check,
+        "caption_style": style,
+        "encoder": encoder,
+    }
+    meta_path = write_meta(seg, out, render_info)
 
-    print(f"SAVED {out}  ({aspect} {tw}x{th}, {mode})  "
+    print(f"SAVED {out}  ({aspect} {tw}x{th}, {label})  "
           f"+ poster {poster.name} + {meta_path.name}", flush=True)
     return out
 
@@ -742,6 +1058,8 @@ def main():
     ap.add_argument("--brand", help="path to reusable JSON brand preset")
     ap.add_argument("--layout", choices=["single", "split"], default="single")
     ap.add_argument("--centers", type=float, nargs=2, default=[0.25, 0.75])
+    ap.add_argument("--framing", choices=["auto", "track", "center", "fit"],
+                    default="auto", help="vertical/square framing (default auto)")
     add_caption_arguments(ap)
     args = ap.parse_args()
     from branding import load_brand
@@ -781,8 +1099,8 @@ def main():
                                     do_tighten=args.tighten, loudnorm=args.loudnorm,
                                     preview=args.preview, brand=brand,
                                     layout=args.layout, centers=args.centers,
-                                    caption=caption)))
-        except subprocess.CalledProcessError as e:
+                                    caption=caption, framing_mode=args.framing)))
+        except (subprocess.CalledProcessError, ValueError) as e:
             print(f"ERROR rendering clip {i}: {e}", flush=True)
             failed += 1
 

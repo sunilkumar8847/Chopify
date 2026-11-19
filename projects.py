@@ -10,6 +10,7 @@ from pathlib import Path
 
 import download_and_transcribe as dt
 import boundaries
+import framing
 import highlights
 import llm
 import render_clips
@@ -22,7 +23,9 @@ import branding
 from captions import update_transcript
 
 DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
-                   "loudnorm": False, "whisper_model": "medium", "device": "cpu",
+                   # Phase 4: -14 LUFS two-pass normalization for new projects
+                   # (saved projects keep the value they were created with).
+                   "loudnorm": True, "whisper_model": "medium", "device": "cpu",
                    "min_len": 15, "max_len": 300, "max_clips": None,
                    "min_score": 8.0, "preferred_len": None,
                    # Phase 2: AI highlight judging (falls back to rule scores
@@ -34,7 +37,9 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "duration_mode": "auto",
                    "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
-                   "layout": "single", "centers": [0.25, 0.75], "caption": None}
+                   "layout": "single", "centers": [0.25, 0.75], "caption": None,
+                   # Phase 4: how vertical/square output is framed.
+                   "framing": "auto"}
 
 
 def digest(value):
@@ -126,6 +131,10 @@ def validate_options(options):
         result["llm_provider"] = DEFAULT_OPTIONS["llm_provider"]
     if result["llm_provider"] not in llm.PROVIDERS:
         raise ValueError(f"Unknown LLM provider: {result['llm_provider']}")
+    if result["framing"] is None:
+        result["framing"] = DEFAULT_OPTIONS["framing"]
+    if result["framing"] not in framing.MODES:
+        raise ValueError("framing must be auto, track, center or fit.")
     if result["duration_mode"] is None:
         result["duration_mode"] = DEFAULT_OPTIONS["duration_mode"]
     if result["duration_mode"] not in boundaries.MODES:
@@ -576,7 +585,8 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                         options["aspect"], out_dir=out, style=options["style"],
                         do_tighten=options["tighten"], loudnorm=options["loudnorm"], preview=preview,
                         brand=brand, layout=options["layout"], centers=options["centers"],
-                        caption=options["caption"], source_offset=source_offset)
+                        caption=options["caption"], source_offset=source_offset,
+                        framing_mode=options["framing"])
                 except (Exception, SystemExit) as exc:
                     if not render_from_sections:
                         raise

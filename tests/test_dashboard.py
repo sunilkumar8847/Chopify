@@ -61,10 +61,11 @@ def test_config_exposes_caption_presets_and_defaults(server):
     config = request(base, "/api/config")
     assert set(config["caption_presets"]) == {
         "default", "clean", "minimal", "bold", "boxed", "karaoke", "pop",
-        "neon", "typewriter", "retro", "hormozi", "mrbeast", "podcast"}
+        "neon", "typewriter", "retro", "hormozi", "mrbeast", "podcast", "shorts"}
     assert config["caption_presets"]["bold"]["animation"] == "pop"
     assert config["caption_defaults"]["words_per_cue"] == 3
-    assert config["caption_aspects"]["9:16"]["font_size"] == 96
+    # Phase 4: smaller Shorts font, captions lifted above the Shorts UI
+    assert config["caption_aspects"]["9:16"]["font_size"] == 88
     assert "money" in config["caption_power_words"] or "secret" in config["caption_power_words"]
     assert any(rule["emoji"] == "💰" for rule in config["caption_emoji_rules"])
 

@@ -12,6 +12,14 @@ __pycache__/
 *.sh
 !install.sh
 
+# OAuth secrets and tokens - never commit (Chopify keeps its own copies,
+# encrypted, in %APPDATA%\Chopify or $CHOPIFY_CONFIG)
+client_secret*.json
+*token*.json
+youtube_*.bin
+upload_usage.json
+upload_settings.json
+
 # chopify outputs
 clips/
 models/

@@ -726,12 +726,120 @@
                 ><button type="submit" class="wide">Save brand preset</button>
               </form>
             </details>
+            <details id="youtube-panel" class="youtube-panel" open>
+              <summary>YouTube</summary>
+              <p id="yt-status" class="muted">Checking YouTube connection…</p>
+              <form id="yt-client-form" hidden>
+                <label
+                  >Google OAuth client file (Desktop app)<input
+                    name="path"
+                    placeholder="D:\path\client_secret_….json"
+                    autocomplete="off"
+                    required
+                /></label>
+                <button type="submit" class="wide">Add client file</button>
+                <p class="hint">
+                  Create it in Google Cloud Console → APIs &amp; Services →
+                  Credentials → OAuth client ID → Desktop app, with the YouTube
+                  Data API v3 enabled. Chopify stores it encrypted, outside Git.
+                </p>
+              </form>
+              <div class="yt-actions">
+                <button id="yt-connect" type="button" hidden>
+                  Connect YouTube channel
+                </button>
+                <button id="yt-disconnect" type="button" hidden>Disconnect</button>
+              </div>
+              <p id="yt-usage" class="hint"></p>
+              <form id="yt-settings-form" hidden>
+                <div class="pair">
+                  <label
+                    >Uploads per day<input
+                      name="max_uploads_per_day"
+                      type="number"
+                      min="0"
+                      max="1000"
+                      required /></label
+                  ><label
+                    >Daily quota units<input
+                      name="daily_quota_units"
+                      type="number"
+                      min="0"
+                      max="10000000"
+                      required
+                  /></label>
+                </div>
+                <div class="pair">
+                  <label
+                    >Default privacy<select name="privacy">
+                      <option value="private">Private</option>
+                      <option value="unlisted">Unlisted</option>
+                      <option value="public">Public</option>
+                    </select></label
+                  ><label
+                    >Units per upload<input
+                      name="upload_cost"
+                      type="number"
+                      min="1"
+                      max="100000"
+                      required
+                  /></label>
+                </div>
+                <button type="submit" class="wide">Save upload settings</button>
+              </form>
+            </details>
           </aside>
         </div>
       </section>
       <footer>
-        CHOPIFY <span>Open source. No upload. No watermark.</span>
+        CHOPIFY
+        <span>Open source. Uploads only what you approve. No watermark.</span>
       </footer>
+      <dialog id="publish-dialog" aria-labelledby="publish-title">
+        <form id="publish-form" method="dialog">
+          <div class="panel-title">
+            <h2 id="publish-title">Publish to YouTube Shorts</h2>
+            <span id="publish-source"></span>
+          </div>
+          <p id="publish-clip" class="muted"></p>
+          <label
+            >Title<input name="title" maxlength="100" required autocomplete="off"
+          /></label>
+          <label
+            >Description<textarea name="description" rows="5"></textarea>
+          </label>
+          <label
+            >Hashtags (space separated)<input name="hashtags" autocomplete="off"
+          /></label>
+          <label
+            >Tags (comma separated)<input name="tags" autocomplete="off"
+          /></label>
+          <div class="pair">
+            <label
+              >Privacy<select name="privacy">
+                <option value="private">Private</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select></label
+            ><label>Category<select name="category_id"></select></label>
+          </div>
+          <label class="check"
+            ><input name="made_for_kids" type="checkbox" /> Made for kids</label
+          >
+          <p id="publish-state" class="hint"></p>
+          <progress id="publish-progress" max="1" value="0" hidden></progress>
+          <div class="publish-actions">
+            <button id="publish-regenerate" type="button">Rewrite with AI</button>
+            <button id="publish-save" type="button">Save draft</button>
+            <button id="publish-retry" type="button" hidden>Retry</button>
+            <button id="publish-cancel" type="button" hidden>Withdraw</button>
+            <button id="publish-approve" type="button" class="primary">
+              Upload to YouTube…
+            </button>
+            <button id="publish-close" type="button">Close</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>

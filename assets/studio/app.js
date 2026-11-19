@@ -393,6 +393,7 @@ async function selectProject(id) {
   state.selected = new Set(state.detail.candidates.map((_, i) => i + 1));
   renderDetail();
   await refreshProjects();
+  await loadYouTube();
 }
 function updateStatus(detail) {
   const progress = detail.progress || {};
@@ -745,7 +746,7 @@ function renderOutputs(detail) {
                   f.name,
                 ),
             );
-          return `<article class="output-card"><video controls preload="none" src="${encodeURI(file.url)}"></video><div class="output-info"><p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div></div></article>`;
+          return `<article class="output-card"><video controls preload="none" src="${encodeURI(file.url)}"></video><div class="output-info"><p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div>${file.kind === "clips" ? publishControl(file.name) : ""}</div></article>`;
         })
         .join("")
     : '<p class="muted">Choose candidates and make a preview or export.</p>';
@@ -1227,3 +1228,265 @@ safe(async () => {
   await config();
   await refreshProjects();
 })();
+
+/* ------------------------------------------------------------------ YouTube
+   Phase 5. Nothing uploads without the user pressing "Upload to YouTube…"
+   and confirming. Tokens never reach the browser. */
+const UPLOAD_LABELS = {
+  draft: "Draft – not uploaded",
+  queued: "Approved – waiting to upload",
+  uploading: "Uploading",
+  uploaded: "Uploaded",
+  quota_wait: "Waiting for YouTube quota",
+  failed: "Upload failed",
+  cancelled: "Withdrawn",
+};
+state.youtube = null;
+state.publishEntry = null;
+
+function uploadFor(name) {
+  return (state.youtube?.uploads || []).find(
+    (u) => u.name === name && u.state !== "cancelled",
+  );
+}
+function publishControl(name) {
+  const entry = uploadFor(name);
+  const status = entry
+    ? `<span class="upload-chip upload-${entry.state}">${escapeHTML(
+        UPLOAD_LABELS[entry.state] || entry.state,
+      )}${entry.state === "uploading" ? ` ${Math.round((entry.progress || 0) * 100)}%` : ""}</span>`
+    : "";
+  const link =
+    entry?.url && entry.state === "uploaded"
+      ? `<a href="${encodeURI(entry.url)}" target="_blank" rel="noopener">Open on YouTube ↗</a>`
+      : "";
+  return `<div class="publish-row">${status}${link}<button type="button" data-publish="${escapeHTML(name)}">${entry ? "Details" : "Publish…"}</button></div>`;
+}
+function formatReset(seconds) {
+  const date = new Date(seconds * 1000);
+  return date.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+function renderYouTube() {
+  const yt = state.youtube;
+  if (!yt) return;
+  const account = yt.account;
+  const signin = account.signin;
+  let text;
+  if (!account.client_configured)
+    text = "Add your Google OAuth client file to connect a channel.";
+  else if (account.connected)
+    text = `Connected: ${account.channel?.title || "YouTube channel"}`;
+  else text = "Not connected.";
+  if (signin && signin.state !== "connected") text += ` ${signin.message}`;
+  if (account.error) text += ` ${account.error}`;
+  $("#yt-status").textContent = text;
+  $("#yt-client-form").hidden = account.client_configured && account.connected;
+  $("#yt-connect").hidden = !account.client_configured || account.connected;
+  $("#yt-disconnect").hidden = !account.connected;
+  $("#yt-settings-form").hidden = !account.connected;
+  const usage = yt.usage;
+  $("#yt-usage").textContent = account.connected
+    ? `${usage.uploads_left_today} upload(s) left today · ${usage.units} quota units used · resets ${formatReset(usage.resets_at)}`
+    : "";
+  const form = $("#yt-settings-form");
+  if (!form.contains(document.activeElement))
+    for (const key of ["max_uploads_per_day", "daily_quota_units", "upload_cost", "privacy"])
+      form.elements[key].value = yt.settings[key];
+  if (state.detail) renderOutputs(state.detail);
+  if (state.publishEntry && $("#publish-dialog").open) {
+    const fresh = (yt.uploads || []).find((u) => u.id === state.publishEntry.id);
+    if (fresh) showPublishState(fresh);
+  }
+}
+async function loadYouTube() {
+  const query = state.id ? `?project=${encodeURIComponent(state.id)}` : "";
+  state.youtube = await api(`/api/youtube${query}`);
+  renderYouTube();
+}
+function youtubeActive() {
+  const yt = state.youtube;
+  return (
+    !!yt &&
+    (yt.account.signin?.state === "waiting" ||
+      yt.worker_busy ||
+      (yt.uploads || []).some((u) => ["queued", "uploading"].includes(u.state)))
+  );
+}
+let youtubeTick = 0;
+setInterval(async () => {
+  youtubeTick += 1;
+  if (!state.youtube || (!youtubeActive() && youtubeTick % 10)) return;
+  try {
+    await loadYouTube();
+  } catch {
+    /* polling errors are shown on the next action */
+  }
+}, 2000);
+
+function metadataFromForm() {
+  const form = $("#publish-form");
+  return {
+    title: form.elements.title.value.trim(),
+    description: form.elements.description.value,
+    hashtags: form.elements.hashtags.value.split(/\s+/).filter(Boolean),
+    tags: form.elements.tags.value.split(",").map((t) => t.trim()).filter(Boolean),
+    privacy: form.elements.privacy.value,
+    category_id: form.elements.category_id.value,
+    made_for_kids: form.elements.made_for_kids.checked,
+  };
+}
+function fillPublishForm(entry) {
+  const form = $("#publish-form");
+  const meta = entry.metadata || {};
+  const select = form.elements.category_id;
+  select.innerHTML = Object.entries(state.youtube.categories)
+    .map(([id, name]) => `<option value="${escapeHTML(id)}">${escapeHTML(name)}</option>`)
+    .join("");
+  const tagLine = (meta.hashtags || []).map((h) => "#" + h).join(" ");
+  form.elements.title.value = meta.title || "";
+  // the hashtag line is shown in its own field and re-added on save
+  form.elements.description.value = (meta.description || "")
+    .replace(tagLine, "")
+    .trim();
+  form.elements.hashtags.value = (meta.hashtags || []).join(" ");
+  form.elements.tags.value = (meta.tags || []).join(", ");
+  form.elements.privacy.value = meta.privacy || "private";
+  select.value = meta.category_id || "22";
+  form.elements.made_for_kids.checked = !!meta.made_for_kids;
+  $("#publish-source").textContent =
+    meta.source === "ai" ? "AI DRAFT" : meta.source === "rules" ? "SIMPLE DRAFT" : "EDITED";
+  $("#publish-clip").textContent = entry.name + (meta.note ? ` · ${meta.note}` : "");
+}
+function showPublishState(entry) {
+  state.publishEntry = entry;
+  const locked = ["queued", "uploading", "uploaded"].includes(entry.state);
+  for (const el of $("#publish-form").elements)
+    if (el.tagName !== "BUTTON") el.disabled = locked;
+  let text = UPLOAD_LABELS[entry.state] || entry.state;
+  if (entry.error) text += `: ${entry.error}`;
+  if (entry.state === "uploaded") text += ` → ${entry.url}`;
+  if (entry.next_attempt && ["quota_wait", "failed"].includes(entry.state))
+    text += ` (next try ${formatReset(entry.next_attempt)})`;
+  $("#publish-state").textContent = text;
+  const bar = $("#publish-progress");
+  bar.hidden = !["uploading", "queued"].includes(entry.state);
+  bar.value = entry.progress || 0;
+  $("#publish-approve").hidden = locked;
+  $("#publish-regenerate").hidden = locked;
+  $("#publish-save").hidden = locked;
+  $("#publish-retry").hidden = !["failed", "quota_wait"].includes(entry.state);
+  $("#publish-cancel").hidden = !["draft", "queued", "failed", "quota_wait"].includes(entry.state);
+}
+async function openPublish(name, regenerate = false) {
+  if (!state.youtube) await loadYouTube();
+  notice(regenerate ? "Writing title and description…" : "Preparing metadata…");
+  const entry = await api(`/api/projects/${state.id}/publish`, { clip: name, regenerate });
+  fillPublishForm(entry);
+  showPublishState(entry);
+  const dialog = $("#publish-dialog");
+  if (!dialog.open) dialog.showModal();
+  await loadYouTube();
+}
+$("#outputs").addEventListener(
+  "click",
+  safe(async (event) => {
+    const button = event.target.closest("[data-publish]");
+    if (button) await openPublish(button.dataset.publish);
+  }),
+);
+$("#publish-close").addEventListener("click", () => $("#publish-dialog").close());
+$("#publish-regenerate").addEventListener(
+  "click",
+  safe(async () => {
+    const entry = await api(`/api/uploads/${state.publishEntry.id}/regenerate`, {});
+    fillPublishForm(entry);
+    showPublishState(entry);
+  }),
+);
+$("#publish-save").addEventListener(
+  "click",
+  safe(async () => {
+    const entry = await api(`/api/uploads/${state.publishEntry.id}/metadata`, {
+      metadata: metadataFromForm(),
+    });
+    fillPublishForm(entry);
+    showPublishState(entry);
+    notice("Draft saved. Nothing was uploaded.");
+  }),
+);
+$("#publish-approve").addEventListener(
+  "click",
+  safe(async () => {
+    const meta = metadataFromForm();
+    const channel = state.youtube?.account?.channel?.title || "your channel";
+    const ok = window.confirm(
+      `Upload "${meta.title}" to ${channel} as ${meta.privacy.toUpperCase()}?\n\nThis sends the video to YouTube.`,
+    );
+    if (!ok) return;
+    const entry = await api(`/api/uploads/${state.publishEntry.id}/approve`, {
+      metadata: meta,
+      confirm: true,
+    });
+    showPublishState(entry);
+    notice("Approved. Uploading in the background.");
+    await loadYouTube();
+  }),
+);
+$("#publish-retry").addEventListener(
+  "click",
+  safe(async () => {
+    showPublishState(await api(`/api/uploads/${state.publishEntry.id}/retry`, {}));
+    await loadYouTube();
+  }),
+);
+$("#publish-cancel").addEventListener(
+  "click",
+  safe(async () => {
+    showPublishState(await api(`/api/uploads/${state.publishEntry.id}/cancel`, {}));
+    await loadYouTube();
+  }),
+);
+$("#yt-client-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    await api("/api/youtube/client", { path: event.target.elements.path.value });
+    event.target.reset();
+    notice("Client file added. Now connect your channel.");
+    await loadYouTube();
+  }),
+);
+$("#yt-connect").addEventListener(
+  "click",
+  safe(async () => {
+    await api("/api/youtube/connect", {});
+    notice("Finish signing in in the browser tab that opened.");
+    await loadYouTube();
+  }),
+);
+$("#yt-disconnect").addEventListener(
+  "click",
+  safe(async () => {
+    if (!window.confirm("Disconnect YouTube? Chopify will revoke its access.")) return;
+    await api("/api/youtube/disconnect", {});
+    notice("YouTube disconnected.");
+    await loadYouTube();
+  }),
+);
+$("#yt-settings-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    await api("/api/youtube/settings", {
+      settings: {
+        max_uploads_per_day: Number(form.elements.max_uploads_per_day.value),
+        daily_quota_units: Number(form.elements.daily_quota_units.value),
+        upload_cost: Number(form.elements.upload_cost.value),
+        privacy: form.elements.privacy.value,
+      },
+    });
+    notice("Upload settings saved.");
+    await loadYouTube();
+  }),
+);

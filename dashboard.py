@@ -9,7 +9,8 @@ import secrets
 import subprocess
 import sys
 import threading
-from urllib.parse import unquote, urlsplit
+import time
+from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
 import branding
@@ -17,7 +18,10 @@ import ingest
 import jobs
 import live
 import projects
+import publish_meta
 import render_clips
+import youtube_auth
+import youtube_upload
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "assets" / "studio"
@@ -68,6 +72,36 @@ def project_detail(root, project_id):
     return data
 
 
+def public_upload(entry):
+    """Upload entry for the UI: no session URI (it can resume the upload)."""
+    return {k: v for k, v in entry.items() if k not in {"session", "info"}}
+
+
+def clip_info(path, clip):
+    """What the metadata writer needs to know about one exported clip."""
+    meta_file = clip.with_suffix(".meta.json")
+    meta = projects.read_json(meta_file) if meta_file.is_file() else {}
+    transcript = projects.read_json(path / "transcript.json") if (path / "transcript.json").is_file() else {}
+    start, end = meta.get("start"), meta.get("end")
+    words = transcript.get("words") or []
+    text = " ".join(str(w.get("word", "")).strip() for w in words
+                    if start is not None and end is not None
+                    and float(w["start"]) >= float(start) - 0.05
+                    and float(w["end"]) <= float(end) + 0.05)
+    summary = ""
+    if (path / "segments.json").is_file() and start is not None:
+        for segment in projects.read_json(path / "segments.json"):
+            if abs(float(segment.get("start", -1)) - float(start)) < 0.05:
+                summary = (segment.get("judge") or {}).get("summary", "")
+                break
+    state = projects.read_project(path)
+    hook = str(meta.get("title") or "").replace("#shorts", "").strip()
+    return {"hook": hook, "text": text[:4000], "summary": summary,
+            "language": transcript.get("language", ""),
+            "source_title": (state.get("source_meta") or {}).get("title", ""),
+            "start": start, "end": end}
+
+
 def detect_source(source):
     """Classify a local path or URL (normal video, live, upcoming, ...)."""
     if not isinstance(source, str) or not source.strip() or len(source) > 8000:
@@ -98,6 +132,10 @@ class Studio:
         self.cancelled = set()     # project_ids whose processing was cancelled
         self.recorders = {}        # project_id -> (stop_event, abort_event)
         self.closing = False
+        # Phase 5: YouTube. Uploads run only for clips the user approved.
+        self.youtube = youtube_auth.YouTubeAccount()
+        self.uploads = youtube_upload.UploadQueue(self.youtube)
+        self.upload_timer = None
         for path in self.root.glob("*/project.json"):
             try:
                 state = projects.read_project(path.parent)
@@ -112,6 +150,65 @@ class Studio:
 
     def busy(self, project_id):
         return self.jobs.busy(project_id)
+
+    # ---------------------------------------------------------- YouTube
+    UPLOAD_JOB = "youtube-uploads"
+
+    def kick_uploads(self):
+        """Process approved uploads on the upload lane (one at a time)."""
+        with self.lock:
+            if self.closing or self.jobs.busy(self.UPLOAD_JOB, "upload"):
+                return
+            if not self.uploads.due():
+                self._schedule_uploads()
+                return
+            self.jobs.submit("upload", self.UPLOAD_JOB, self._run_uploads, kind="upload")
+
+    def _run_uploads(self):
+        try:
+            self.uploads.process()
+        finally:
+            self._schedule_uploads()
+
+    def _schedule_uploads(self):
+        wake = self.uploads.next_wakeup()
+        with self.lock:
+            if self.upload_timer is not None:
+                self.upload_timer.cancel()
+                self.upload_timer = None
+            if wake is None or self.closing:
+                return
+            delay = max(5.0, min(wake - time.time(), 6 * 3600))
+            self.upload_timer = threading.Timer(delay, self.kick_uploads)
+            self.upload_timer.daemon = True
+            self.upload_timer.start()
+
+    def youtube_state(self, project_id=None):
+        entries = [public_upload(e) for e in self.uploads.entries()
+                   if project_id is None or e["project_id"] == project_id]
+        return {"account": self.youtube.status(), "settings": self.uploads.settings(),
+                "usage": self.uploads.usage(), "uploads": entries,
+                "categories": publish_meta.CATEGORIES,
+                "worker_busy": self.jobs.busy(self.UPLOAD_JOB, "upload")}
+
+    def publish_draft(self, project_id, clip_name, regenerate=False):
+        """Upload entry (with AI metadata) for one exported clip. Uploads nothing."""
+        path = projects.project_path(self.root, project_id)
+        clip = (path / "clips" / str(clip_name)).resolve()
+        if clip.parent != (path / "clips").resolve() or clip.suffix != ".mp4" or not clip.is_file():
+            raise ValueError("Choose an exported clip (not a draft preview).")
+        info = clip_info(path, clip)
+        state = projects.read_project(path)
+        settings = self.uploads.settings()
+        existing = [e for e in self.uploads.entries()
+                    if e["file"] == str(clip) and e["state"] != "cancelled"]
+        if existing and not regenerate:
+            return existing[0]
+        meta = publish_meta.generate(info, publish_meta.provider_for(state["options"]),
+                                     settings)
+        if existing:
+            return self.uploads.update_metadata(existing[0]["id"], meta)
+        return self.uploads.draft(project_id, clip, meta, {"info": info})
 
     def list_projects(self):
         result = []
@@ -292,6 +389,8 @@ class Studio:
     def close(self):
         with self.lock:
             self.closing = True
+            if self.upload_timer is not None:
+                self.upload_timer.cancel()
             # Recordings stop now and are marked interrupted (parts are kept).
             for _, abort in list(self.recorders.values()):
                 abort.set()
@@ -365,6 +464,12 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if parts == ["api", "projects"]:
                 return self.send_json({"projects": self.app.list_projects()})
+            if parts == ["api", "youtube"]:
+                query = parse_qs(urlsplit(self.path).query)
+                project = query.get("project", [None])[0]
+                if project is not None:
+                    projects.project_path(self.app.root, project)   # validates id
+                return self.send_json(self.app.youtube_state(project))
             if len(parts) == 3 and parts[:2] == ["api", "projects"]:
                 data = project_detail(self.app.root, parts[2])
                 data["busy"] = self.app.busy(parts[2])
@@ -411,6 +516,10 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "detect"]:
                 # Network probe: deliberately outside the global lock.
                 return self.send_json(detect_source(body.get("source")))
+            if parts[:2] == ["api", "youtube"] or parts[:2] == ["api", "uploads"] or (
+                    len(parts) == 4 and parts[:2] == ["api", "projects"]
+                    and parts[3] == "publish"):
+                return self.youtube_post(parts, body)
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in {
                     "record-stop", "cancel"}:
                 # These act on a busy project, so they skip the busy check below.
@@ -489,6 +598,48 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, OSError) as exc:
             self.send_json({"error": str(exc)}, 400)
 
+    def youtube_post(self, parts, body):
+        app = self.app
+        try:
+            if parts == ["api", "youtube", "client"]:
+                result = app.youtube.import_client(body.get("path", ""))
+            elif parts == ["api", "youtube", "connect"]:
+                url = app.youtube.begin_signin(open_browser=webbrowser.open)
+                result = {"url": url}
+            elif parts == ["api", "youtube", "disconnect"]:
+                result = app.youtube.disconnect()
+            elif parts == ["api", "youtube", "settings"]:
+                result = app.uploads.update_settings(body.get("settings"))
+            elif len(parts) == 4 and parts[3] == "publish":
+                result = public_upload(app.publish_draft(
+                    parts[2], body.get("clip"), bool(body.get("regenerate"))))
+            elif len(parts) == 4 and parts[:2] == ["api", "uploads"]:
+                entry_id, action = parts[2], parts[3]
+                if action == "metadata":
+                    result = app.uploads.update_metadata(entry_id, body.get("metadata"))
+                elif action == "approve":
+                    # The only path to an upload: an explicit, confirmed approval.
+                    result = app.uploads.approve(entry_id, body.get("metadata"),
+                                                 confirm=body.get("confirm") is True)
+                    app.kick_uploads()
+                elif action == "retry":
+                    result = app.uploads.retry(entry_id)
+                    app.kick_uploads()
+                elif action == "cancel":
+                    result = app.uploads.cancel(entry_id)
+                elif action == "regenerate":
+                    entry = app.uploads.get(entry_id)
+                    result = app.publish_draft(entry["project_id"], entry["name"], True)
+                else:
+                    return self.send_json({"error": "Not found."}, 404)
+                result = public_upload(result)
+            else:
+                return self.send_json({"error": "Not found."}, 404)
+            return self.send_json(result)
+        except (youtube_auth.AuthError, youtube_upload.UploadError, ValueError,
+                KeyError, TypeError, OSError) as exc:
+            return self.send_json({"error": str(exc)}, 400)
+
     def send_file(self, path):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -528,6 +679,8 @@ class Handler(BaseHTTPRequestHandler):
 def make_server(root="projects", port=8765):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.app = Studio(root)
+    # Resume uploads the user already approved (e.g. interrupted by a restart).
+    server.app.kick_uploads()
     return server
 
 

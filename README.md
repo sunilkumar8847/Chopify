@@ -296,6 +296,7 @@ Whisper detects spoken language, and captions retain its transcription. The heur
 - [CLI flag reference](docs/CLI.md)
 - [CLI, Python interfaces, and local HTTP API](docs/AGENT-API.md)
 - [Setup and troubleshooting](docs/TROUBLESHOOTING.md)
+- [Publishing to YouTube Shorts (OAuth setup, approval, quota)](docs/YOUTUBE.md)
 - [Machine-readable product facts](docs/product.json) and [llms.txt](llms.txt)
 - [Search discovery and documentation deployment](docs/DISCOVERABILITY.md)
 

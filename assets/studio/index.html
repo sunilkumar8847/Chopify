@@ -63,6 +63,46 @@
             One source per line. Local files stay in place. URLs download to
             their project folder.
           </p>
+          <div class="detect-row">
+            <button type="button" id="detect">Check source</button>
+            <span class="hint"
+              >Is it a video, a live stream, or a stream that has not started
+              yet?</span
+            >
+          </div>
+          <div id="detect-result" class="detect-result" hidden>
+            <p>
+              <strong id="detect-label"></strong>
+              <span id="detect-title" class="muted"></span>
+            </p>
+            <p id="detect-message" class="hint"></p>
+            <div id="detect-record" hidden>
+              <label class="check"
+                ><input name="from_start" type="checkbox" /> Record from the
+                beginning (experimental)</label
+              >
+              <div class="pair">
+                <label
+                  >Max hours<input
+                    name="max_hours"
+                    type="number"
+                    min="0.1"
+                    max="48"
+                    step="0.5"
+                    value="12" /></label
+                ><label
+                  >Afterwards<select name="after">
+                    <option value="prepare">Find clips</option>
+                    <option value="all">Find clips and export</option>
+                    <option value="none">Do nothing</option>
+                  </select></label
+                >
+              </div>
+              <button type="button" id="detect-record-start" class="primary">
+                ● Record this stream
+              </button>
+            </div>
+          </div>
           <div class="form-grid">
             <label
               >Format<select id="new-aspect">
@@ -100,8 +140,8 @@
           </div>
           <div class="form-bottom">
             <span class="hint"
-              >First run downloads the speech model.<br />Jobs run one at a
-              time; successful work is saved.</span
+              >First run downloads the speech model.<br />Clip jobs run one at a
+              time; recordings run alongside. Successful work is saved.</span
             ><button class="primary" type="submit">
               Find clips <span>↗</span>
             </button>
@@ -132,6 +172,47 @@
           <span id="status" class="status"></span>
         </div>
         <p id="job-error" role="alert" hidden></p>
+        <section id="recording-panel" class="panel recording-panel" hidden>
+          <div class="panel-title">
+            <h2>Live recording</h2>
+            <span id="recording-state">NOT STARTED</span>
+          </div>
+          <p id="recording-message" class="hint"></p>
+          <dl class="recording-stats">
+            <div><dt>Recorded</dt><dd id="recording-duration">0s</dd></div>
+            <div><dt>Size</dt><dd id="recording-size">0 MB</dd></div>
+            <div><dt>Parts</dt><dd id="recording-parts">0</dd></div>
+            <div><dt>Reconnects</dt><dd id="recording-retries">0</dd></div>
+          </dl>
+          <form id="recording-form" class="recording-options">
+            <label class="check"
+              ><input name="from_start" type="checkbox" /> Record from the
+              beginning (experimental)</label
+            >
+            <div class="pair">
+              <label
+                >Max hours<input
+                  name="max_hours"
+                  type="number"
+                  min="0.1"
+                  max="48"
+                  step="0.5"
+                  value="12" /></label
+              ><label
+                >Afterwards<select name="after">
+                  <option value="prepare">Find clips</option>
+                  <option value="all">Find clips and export</option>
+                  <option value="none">Do nothing</option>
+                </select></label
+              >
+            </div>
+          </form>
+          <div class="recording-actions">
+            <button id="record-start" class="primary">● Start recording</button
+            ><button id="record-stop">■ Stop recording</button
+            ><button id="record-finalize">Finalize recording</button>
+          </div>
+        </section>
         <div class="workspace">
           <div class="review-column">
             <div class="player-wrap">
@@ -159,7 +240,10 @@
                   Captions
                 </button>
               </div>
-              <button id="prepare">Find / refresh clips</button>
+              <span
+                ><button id="cancel-job" hidden>Cancel job</button
+                ><button id="prepare">Find / refresh clips</button></span
+              >
             </div>
             <div id="clip-panel">
               <div id="selection-summary" class="selection-summary" hidden></div>

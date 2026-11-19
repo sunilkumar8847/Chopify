@@ -1,6 +1,5 @@
 """Chopify Studio: loopback browser UI with a serial, resumable project queue."""
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -14,6 +13,9 @@ from urllib.parse import unquote, urlsplit
 import webbrowser
 
 import branding
+import ingest
+import jobs
+import live
 import projects
 import render_clips
 
@@ -47,7 +49,15 @@ def project_detail(root, project_id):
         source_meta.get("render_from_sections")
         or transcript.get("render_from_sections"))
     video = transcript.get("video") or state.get("video")
+    recording = state.get("recording") if isinstance(state.get("recording"), dict) else None
+    source_url = (recording or {}).get("url") or state.get("source_url")
     data.update({
+        "recording": recording,
+        "recording_parts": len(live.part_files(path)) if recording else 0,
+        "source_kind": (ingest.describe_source(source_meta)
+                        if source_meta and not recording else None),
+        "can_record": bool(ingest.is_url(source_url or state.get("source", ""))
+                           and (recording or {}).get("state") != "recorded"),
         "source_meta": source_meta,
         "progress": state.get("progress") or {},
         "render_errors": state.get("render_errors") or [],
@@ -58,29 +68,50 @@ def project_detail(root, project_id):
     return data
 
 
+def detect_source(source):
+    """Classify a local path or URL (normal video, live, upcoming, ...)."""
+    if not isinstance(source, str) or not source.strip() or len(source) > 8000:
+        raise ValueError("Provide a video path or URL.")
+    source = source.strip()
+    if not ingest.is_url(source) and not Path(source).expanduser().is_file():
+        raise ValueError(f"Video file does not exist or URL is invalid: {source}")
+    meta = ingest.probe_source(source)
+    info = ingest.describe_source(meta)
+    return {**info, "source": source, "title": meta.get("title"),
+            "duration": meta.get("duration"),
+            "live_status": meta.get("live_status"),
+            "release_timestamp": meta.get("release_timestamp")}
+
+
 class Studio:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "brands").mkdir(exist_ok=True)
         self.token = secrets.token_urlsafe(32)
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chopify")
+        # Separate lanes: recording, processing (one at a time) and uploads.
+        self.jobs = jobs.JobManager()
         self.lock = threading.RLock()
-        self.futures = {}
+        self.futures = {}          # project_id -> latest processing job future
         self.processes = set()
+        self.children = {}         # project_id -> running chopify.py child
+        self.cancelled = set()     # project_ids whose processing was cancelled
+        self.recorders = {}        # project_id -> (stop_event, abort_event)
         self.closing = False
         for path in self.root.glob("*/project.json"):
             try:
                 state = projects.read_project(path.parent)
-                if state["status"] in {"queued", "running"}:
+                changed = live.mark_interrupted(state)
+                if state["status"] in {"queued", "running", "recording"}:
                     state.update(status="interrupted", error="Studio stopped. Resume this project to continue.")
+                    changed = True
+                if changed:
                     projects.save_project(path.parent, state)
             except (ValueError, OSError, KeyError):
                 continue
 
     def busy(self, project_id):
-        future = self.futures.get(project_id)
-        return future is not None and not future.done()
+        return self.jobs.busy(project_id)
 
     def list_projects(self):
         result = []
@@ -91,7 +122,7 @@ class Studio:
                 continue
         return sorted(result, key=lambda p: p["created"], reverse=True)
 
-    def enqueue(self, project_id, action, preview=False, pick=None):
+    def enqueue(self, project_id, action, preview=False, pick=None, after_recording=False):
         if action not in {"prepare", "render", "all"}:
             raise ValueError("Unknown action.")
         if not isinstance(preview, bool):
@@ -100,12 +131,115 @@ class Studio:
             raise ValueError("Select numbered clips, for example 1,3,5.")
         with self.lock:
             path = projects.project_path(self.root, project_id)
-            if self.busy(project_id):
+            if self.jobs.busy(project_id, "process"):
                 raise ValueError("This project is already queued or running.")
+            if not after_recording and self.jobs.busy(project_id, "record"):
+                raise ValueError("Stop the recording before finding clips.")
             state = projects.read_project(path)
             state.update(status="queued", stage=action, error=None)
             projects.save_project(path, state)
-            self.futures[project_id] = self.executor.submit(self._run, path, action, preview, pick)
+            self.cancelled.discard(project_id)
+            job = self.jobs.submit("process", project_id, self._run, path, action,
+                                   preview, pick, kind=action)
+            job.on_cancel(lambda: self._cancel_process(project_id))
+            self.futures[project_id] = job.future
+            return job
+
+    def _cancel_process(self, project_id):
+        with self.lock:
+            self.cancelled.add(project_id)
+            child = self.children.get(project_id)
+        if child is not None and child.poll() is None:
+            ingest._kill_tree(child)
+
+    def cancel(self, project_id):
+        """Cancel this project's queued or running processing/recording job."""
+        path = projects.project_path(self.root, project_id)
+        active = self.jobs.active(project_id)
+        if not active:
+            raise ValueError("Nothing is queued or running for this project.")
+        was_queued = {job.lane for job in active if job.state == "queued"}
+        self.jobs.cancel_project(project_id)
+        if "process" in was_queued:
+            projects.update_project(path, lambda s: s.update(
+                status="cancelled", stage="cancelled", error=None))
+        return {"cancelled": [job.lane for job in active]}
+
+    # ---------------------------------------------------------- recording
+    def start_recording(self, project_id, settings=None):
+        """Start, resume or retry recording a live/upcoming stream URL."""
+        with self.lock:
+            path = projects.project_path(self.root, project_id)
+            if self.busy(project_id):
+                raise ValueError("Wait for this project's current job to finish.")
+            state = projects.read_project(path)
+            rec = state.get("recording")
+            if isinstance(rec, dict) and rec.get("state") == "recorded":
+                raise ValueError("This stream is already recorded. Create a new "
+                                 "project to record it again.")
+            url = (rec or {}).get("url") or state.get("source_url") or state["source"]
+            if not ingest.is_url(url):
+                raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
+            if not isinstance(rec, dict):
+                rec = live.new_recording(url, settings)
+            elif settings is not None:
+                rec["settings"] = live.validate_settings({**rec["settings"], **settings})
+            rec.update(state="queued", error=None, message="Starting...")
+
+            def mutate(s):
+                s.update(recording=rec, status="recording", stage="recording queued",
+                         error=None)
+            projects.update_project(path, mutate)
+            stop, abort = threading.Event(), threading.Event()
+            job = self.jobs.submit("record", project_id, self._record, path, stop,
+                                   abort, kind="record")
+            job.on_cancel(stop.set)  # cancelling a recording keeps what exists
+            self.recorders[project_id] = (stop, abort)
+            return job
+
+    def stop_recording(self, project_id):
+        stop_abort = self.recorders.get(project_id)
+        if stop_abort is None or not self.jobs.busy(project_id, "record"):
+            raise ValueError("No recording is running for this project.")
+        stop_abort[0].set()
+
+    def finalize_recording(self, project_id):
+        """Join an interrupted/failed recording's parts and hand them off."""
+        with self.lock:
+            path = projects.project_path(self.root, project_id)
+            if self.busy(project_id):
+                raise ValueError("Wait for this project's current job to finish.")
+            if not live.part_files(path):
+                raise ValueError("There is no recorded media to finalize.")
+            return self.jobs.submit("record", project_id, self._finalize_recording,
+                                    path, kind="finalize")
+
+    def _record(self, path, stop, abort):
+        try:
+            result = live.Recorder(path, stop, abort).run()
+        finally:
+            self.recorders.pop(path.name, None)
+        self._after_recording(path, result)
+        return result
+
+    def _finalize_recording(self, path):
+        result = live.finalize_existing(path)
+        self._after_recording(path, result)
+        return result
+
+    def _after_recording(self, path, result):
+        """Hand a finished recording to the existing processing pipeline."""
+        if result != "recorded" or self.closing:
+            return
+        after = live.validate_settings(
+            projects.read_project(path)["recording"].get("settings"))["after"]
+        if after == "none":
+            return
+        try:
+            self.enqueue(path.name, after, after_recording=True)
+        except ValueError as exc:
+            projects.update_project(path, lambda s: s.update(
+                error=f"Recording saved, but processing did not start: {exc}"))
 
     def _run(self, path, action, preview, pick):
         # Background jobs have no one to answer prompts: --no-input keeps the
@@ -126,13 +260,21 @@ class Studio:
                     child = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.DEVNULL,
                                              stdout=log, stderr=subprocess.STDOUT)
                     self.processes.add(child)
+                    self.children[path.name] = child
                 code = child.wait()
                 with self.lock:
                     self.processes.discard(child)
-            if code:
+                    self.children.pop(path.name, None)
+                    cancelled = path.name in self.cancelled
+            if cancelled:
+                state = projects.read_project(path)
+                state.update(status="cancelled", stage="cancelled", error=None)
+                projects.save_project(path, state)
+            elif code:
                 state = projects.read_project(path)
                 state.update(status="failed", error=state.get("error") or "Job failed. Open the job log for setup or input details.")
                 projects.save_project(path, state)
+            return code
         except Exception as exc:
             state = projects.read_project(path)
             state.update(status="failed", error=str(exc))
@@ -141,9 +283,12 @@ class Studio:
     def close(self):
         with self.lock:
             self.closing = True
+            # Recordings stop now and are marked interrupted (parts are kept).
+            for _, abort in list(self.recorders.values()):
+                abort.set()
             for child in list(self.processes):
                 child.terminate()
-            self.executor.shutdown(wait=False, cancel_futures=True)
+        self.jobs.shutdown()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -214,6 +359,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[:2] == ["api", "projects"]:
                 data = project_detail(self.app.root, parts[2])
                 data["busy"] = self.app.busy(parts[2])
+                data["recording_active"] = self.app.jobs.busy(parts[2], "record")
+                data["jobs"] = self.app.jobs.list(parts[2])[-10:]
                 return self.send_json(data)
             if parts and parts[0] == "media" and len(parts) >= 3:
                 path = projects.project_path(self.app.root, parts[1]).resolve()
@@ -252,7 +399,27 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             parts = unquote(urlsplit(self.path).path).strip("/").split("/")
+            if parts == ["api", "detect"]:
+                # Network probe: deliberately outside the global lock.
+                return self.send_json(detect_source(body.get("source")))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in {
+                    "record-stop", "cancel"}:
+                # These act on a busy project, so they skip the busy check below.
+                if parts[3] == "record-stop":
+                    self.app.stop_recording(parts[2])
+                    return self.send_json({"ok": True})
+                return self.send_json({"ok": True, **self.app.cancel(parts[2])})
             with self.app.lock:
+                if parts == ["api", "record"]:
+                    source = body.get("source")
+                    if not isinstance(source, str) or not ingest.is_url(source.strip()):
+                        raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
+                    state = live.start_recording_project(
+                        self.app.root, source.strip(), body.get("settings"),
+                        body.get("options", {}))
+                    self.app.start_recording(state["id"])
+                    return self.send_json(projects.read_project(
+                        projects.project_path(self.app.root, state["id"])), 201)
                 if parts == ["api", "projects"]:
                     return self.send_json(projects.create_project(self.app.root, body["source"], body.get("options", {})), 201)
                 if parts == ["api", "batch"]:
@@ -297,6 +464,13 @@ class Handler(BaseHTTPRequestHandler):
                         projects.atomic_json(path / "segments.json", segments)
                     elif action == "run":
                         self.app.enqueue(project_id, body.get("action", "prepare"), body.get("preview", False), body.get("pick"))
+                    elif action == "record":
+                        settings = body.get("settings")
+                        if settings is not None and not isinstance(settings, dict):
+                            raise ValueError("Recording settings must be an object.")
+                        self.app.start_recording(project_id, settings)
+                    elif action == "record-finalize":
+                        self.app.finalize_recording(project_id)
                     else:
                         return self.send_json({"error": "Not found."}, 404)
                     return self.send_json({"ok": True})

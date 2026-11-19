@@ -411,6 +411,8 @@ function updateStatus(detail) {
   $("#job-error").textContent = error;
   $("#log").textContent = detail.log || "No job has run yet.";
   state.busy = detail.busy;
+  $("#cancel-job").hidden = !detail.busy;
+  renderRecording(detail);
   for (const selector of [
     "#prepare",
     "#preview",
@@ -427,6 +429,69 @@ function updateStatus(detail) {
     "#settings-form input, #settings-form select, #candidates input, #transcript-words input, #caption-form input, #caption-form select, #caption-presets button",
   ))
     el.disabled = detail.busy;
+}
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+function recordingSettings(root) {
+  const hours = Number(root.querySelector("[name=max_hours]").value) || 12;
+  return {
+    from_start: root.querySelector("[name=from_start]").checked,
+    max_duration: Math.round(Math.min(48, Math.max(0.1, hours)) * 3600),
+    after: root.querySelector("[name=after]").value,
+  };
+}
+const RECORDING_LIVE_KINDS = ["live", "upcoming", "processing"];
+function renderRecording(detail) {
+  const panel = $("#recording-panel");
+  const rec = detail.recording;
+  const kind = detail.source_kind?.kind;
+  const show =
+    !!rec || (detail.can_record && RECORDING_LIVE_KINDS.includes(kind));
+  panel.hidden = !show;
+  if (!show) return;
+  const status = rec?.state || "not started";
+  const active = !!detail.recording_active;
+  const parts = Number(detail.recording_parts) || 0;
+  $("#recording-state").textContent = status.toUpperCase();
+  $("#recording-message").textContent =
+    rec?.error || rec?.message || detail.source_kind?.message || "";
+  $("#recording-duration").textContent = formatDuration(rec?.seconds);
+  $("#recording-size").textContent = formatBytes(rec?.bytes);
+  $("#recording-parts").textContent = String(
+    Math.max(parts, (rec?.parts || []).length),
+  );
+  $("#recording-retries").textContent = String(rec?.retries || 0);
+  const canStart = !active && status !== "recorded" && detail.can_record;
+  const resumable = ["interrupted", "failed", "stopped"].includes(status);
+  $("#record-start").hidden = !canStart;
+  $("#record-start").textContent =
+    resumable && parts ? "● Resume recording" : "● Start recording";
+  $("#record-stop").hidden = !(active && status !== "finalizing");
+  $("#record-finalize").hidden = !(
+    !active &&
+    parts > 0 &&
+    status !== "recorded"
+  );
+  $("#recording-form").hidden = !canStart;
+  if (canStart && rec?.settings && state.recordingFormFor !== detail.project.id) {
+    const form = $("#recording-form");
+    form.elements.from_start.checked = !!rec.settings.from_start;
+    form.elements.max_hours.value = String(
+      Math.round((rec.settings.max_duration / 3600) * 10) / 10,
+    );
+    form.elements.after.value = rec.settings.after;
+    state.recordingFormFor = detail.project.id;
+  }
+}
+async function startRecording() {
+  await api(`/api/projects/${state.id}/record`, {
+    settings: recordingSettings($("#recording-form")),
+  });
+  notice("Recording started. You can keep working on other projects.");
+  await selectProject(state.id);
 }
 const CANDIDATES_PER_PAGE = 25;
 const CONTENT_PROFILE_LABELS = {
@@ -730,6 +795,76 @@ $("#create-form").addEventListener(
     } finally {
       button.disabled = false;
     }
+  }),
+);
+$("#detect").addEventListener(
+  "click",
+  safe(async () => {
+    const source = $("#sources")
+      .value.split(/\r?\n/)
+      .map((s) => s.trim().replace(/^"|"$/g, ""))
+      .find(Boolean);
+    if (!source) throw new Error("Add a video path or URL first.");
+    const button = $("#detect");
+    button.disabled = true;
+    button.textContent = "Checking…";
+    try {
+      const result = await api("/api/detect", { source });
+      state.detected = result;
+      $("#detect-result").hidden = false;
+      $("#detect-label").textContent = result.label;
+      $("#detect-title").textContent = result.title || "";
+      $("#detect-message").textContent = result.message;
+      $("#detect-record").hidden = !result.can_record;
+    } finally {
+      button.disabled = false;
+      button.textContent = "Check source";
+    }
+  }),
+);
+$("#detect-record-start").addEventListener(
+  "click",
+  safe(async () => {
+    if (!state.detected?.can_record) throw new Error("Check a live stream first.");
+    const project = await api("/api/record", {
+      source: state.detected.source,
+      settings: recordingSettings($("#detect-record")),
+      options: {
+        aspect: $("#new-aspect").value,
+        whisper_model: $("#new-model").value,
+        style: $("#new-style").value,
+      },
+    });
+    $("#detect-result").hidden = true;
+    $("#sources").value = "";
+    state.detected = null;
+    await selectProject(project.id);
+    notice("Recording started. Chopify finds clips when it finishes.");
+  }),
+);
+$("#record-start").addEventListener("click", safe(startRecording));
+$("#record-stop").addEventListener(
+  "click",
+  safe(async () => {
+    await api(`/api/projects/${state.id}/record-stop`, {});
+    notice("Stopping safely. The recording is kept and then processed.");
+  }),
+);
+$("#record-finalize").addEventListener(
+  "click",
+  safe(async () => {
+    await api(`/api/projects/${state.id}/record-finalize`, {});
+    notice("Joining the recorded parts…");
+    await selectProject(state.id);
+  }),
+);
+$("#cancel-job").addEventListener(
+  "click",
+  safe(async () => {
+    if (!confirm("Cancel this project's job? A recording is stopped and kept."))
+      return;
+    await api(`/api/projects/${state.id}/cancel`, {});
+    notice("Cancelling…");
   }),
 );
 $("#settings-form").addEventListener(

@@ -25,8 +25,89 @@ class SectionDownloadTimeout(RuntimeError):
     """A ranged section download produced no usable file before timing out."""
 
 
+# yt-dlp ``live_status`` values. ``post_live`` means the stream just ended and
+# YouTube is still processing the replay.
+LIVE_STATUSES = ("not_live", "is_live", "is_upcoming", "was_live", "post_live")
+# Statuses that change over time, so a cached probe must not be trusted.
+TRANSIENT_LIVE = {"is_live", "is_upcoming", "post_live"}
+# Statuses the normal download pipeline cannot process yet.
+BLOCKED_LIVE = TRANSIENT_LIVE
+_UPCOMING_HINTS = ("will begin", "premieres in", "premiere will begin",
+                   "scheduled for", "is_upcoming", "this live event")
+
+
 def is_url(source):
     return urlparse(str(source)).scheme in {"http", "https"}
+
+
+def live_status_from(data):
+    """Normalize yt-dlp metadata to one of LIVE_STATUSES (or None if unknown)."""
+    if not isinstance(data, dict) or not data:
+        return None
+    status = data.get("live_status")
+    if status in LIVE_STATUSES:
+        return status
+    if data.get("is_live"):
+        return "is_live"
+    if data.get("was_live"):
+        return "was_live"
+    return "not_live"
+
+
+def describe_source(meta):
+    """Plain-language classification used by Studio and the CLI.
+
+    Returns {"kind", "label", "message", "can_process", "can_record"}.
+    """
+    meta = meta or {}
+    if not meta.get("url"):
+        return {"kind": "local", "label": "Local video", "can_process": True,
+                "can_record": False,
+                "message": "Local file. It stays in place and is processed directly."}
+    status = meta.get("live_status")
+    if status == "is_live":
+        return {"kind": "live", "label": "Live now", "can_process": False,
+                "can_record": True,
+                "message": "This stream is live. Record it, then Chopify "
+                           "finds clips in the recording."}
+    if status == "is_upcoming":
+        when = meta.get("release_timestamp")
+        text = "This stream has not started yet."
+        if isinstance(when, (int, float)) and when > 0:
+            import datetime
+            text = ("This stream is scheduled for "
+                    + datetime.datetime.fromtimestamp(when).strftime(
+                        "%Y-%m-%d %H:%M") + " (local time).")
+        return {"kind": "upcoming", "label": "Upcoming stream",
+                "can_process": False, "can_record": True,
+                "message": text + " Start recording and Chopify waits for it."}
+    if status == "post_live":
+        return {"kind": "processing", "label": "Stream just ended",
+                "can_process": False, "can_record": False,
+                "message": "The stream ended and YouTube is still processing "
+                           "the replay. Try again later (usually minutes, "
+                           "sometimes hours)."}
+    if status == "was_live":
+        return {"kind": "live_vod", "label": "Completed livestream",
+                "can_process": True, "can_record": False,
+                "message": "Finished livestream replay. It is processed like a "
+                           "normal video."}
+    if status == "not_live":
+        return {"kind": "video", "label": "Video", "can_process": True,
+                "can_record": False, "message": "Regular video."}
+    return {"kind": "unknown", "label": "Unknown", "can_process": True,
+            "can_record": False,
+            "message": "Could not read this URL's details. Processing will "
+                       "still try to download it."}
+
+
+def live_block_message(meta):
+    """Error text for a URL the processing pipeline cannot download yet."""
+    info = describe_source(meta)
+    if info["kind"] in {"live", "upcoming"}:
+        return (f"{info['message']} Use Start recording in Studio, or run "
+                "'python live.py URL' from the command line.")
+    return info["message"]
 
 
 def _kill_tree(proc):
@@ -131,14 +212,28 @@ def _probe_url(url, run=None):
         "source": url, "url": True, "title": url, "duration": None,
         "size": None, "estimated_size": None, "width": 0, "height": 0,
         "has_audio": None, "has_video": None, "formats": [],
+        "live_status": None, "is_live": False, "release_timestamp": None,
     }
+    command = [sys.executable, "-m", "yt_dlp", "--dump-single-json",
+               "--skip-download", "--no-playlist", url]
     try:
-        result = run([
-            sys.executable, "-m", "yt_dlp", "--dump-single-json",
-            "--skip-download", "--no-playlist", url])
+        result = run(command)
         data = json.loads(result.stdout or "{}")
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        return fallback
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        # Upcoming streams have no formats yet, so yt-dlp exits with an error.
+        # Ask again for metadata only; normal failures stay "unknown".
+        data = _probe_without_formats(command, run)
+        if data is None:
+            stderr = str(getattr(exc, "stderr", "") or "").lower()
+            if any(hint in stderr for hint in _UPCOMING_HINTS):
+                return {**fallback, "live_status": "is_upcoming"}
+            return fallback
+        status = live_status_from(data)
+        if status not in TRANSIENT_LIVE:
+            return fallback
+        return {**fallback, "title": str(data.get("title") or url),
+                "live_status": status, "is_live": status == "is_live",
+                "release_timestamp": data.get("release_timestamp")}
 
     duration = data.get("duration")
     try:
@@ -186,7 +281,20 @@ def _probe_url(url, run=None):
             item.get("acodec") not in (None, "none") for item in formats),
         "has_video": bool(videos),
         "formats": formats,
+        "live_status": live_status_from(data),
+        "is_live": live_status_from(data) == "is_live",
+        "release_timestamp": data.get("release_timestamp"),
     }
+
+
+def _probe_without_formats(command, run):
+    """Metadata-only retry used to recognize upcoming streams."""
+    try:
+        result = run(command[:-1] + ["--ignore-no-formats-error", command[-1]])
+        data = json.loads(result.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) and data else None
 
 
 def probe_source(source, runner=None):

@@ -1032,3 +1032,65 @@ button:active {
     animation: none !important;
   }
 }
+
+/* Live recording (Phase 1) */
+.detect-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0 0;
+}
+.detect-row .hint {
+  margin: 0;
+}
+.detect-result {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.detect-result p {
+  margin: 0 0 8px;
+}
+.recording-panel {
+  margin-top: 20px;
+}
+.recording-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.recording-stats div {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+}
+.recording-stats dt {
+  color: var(--muted);
+  font: 10px Consolas, monospace;
+  text-transform: uppercase;
+}
+.recording-stats dd {
+  margin: 4px 0 0;
+  font: 15px Consolas, monospace;
+  color: var(--accent);
+}
+.recording-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.recording-actions [hidden],
+.review-toolbar [hidden] {
+  display: none;
+}
+#cancel-job {
+  margin-right: 8px;
+}
+@media (max-width: 700px) {
+  .recording-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

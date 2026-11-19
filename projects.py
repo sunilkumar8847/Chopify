@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -30,15 +31,31 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def _retry_sharing(action, attempts=20, delay=0.05):
+    """Retry briefly when Windows reports the file is open in another thread.
+
+    Replacing or reading project.json while Studio polls it can raise
+    PermissionError for a few milliseconds on Windows.
+    """
+    for attempt in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def atomic_json(path, data):
     path = Path(path)
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    temp.replace(path)
+    _retry_sharing(lambda: temp.replace(path))
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return json.loads(_retry_sharing(
+        lambda: Path(path).read_text(encoding="utf-8-sig")))
 
 
 def file_identity(path):
@@ -153,6 +170,22 @@ def save_project(path, state):
     atomic_json(Path(path) / "project.json", state)
 
 
+_STATE_LOCK = threading.RLock()
+
+
+def update_project(path, mutate):
+    """Read the latest project.json, apply ``mutate(state)``, save, return it.
+
+    Background threads (the live recorder) use this so they only change the
+    fields they own instead of overwriting a stale copy of the whole state.
+    """
+    with _STATE_LOCK:
+        state = read_project(path)
+        mutate(state)
+        save_project(path, state)
+        return state
+
+
 def edit_transcript(path, words):
     path = Path(path)
     data = update_transcript(read_json(path / "transcript.json"), words)
@@ -224,7 +257,10 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
             source_key = digest(identity)
             cached_meta = (resume
                            and state["cache"].get("source_meta") == source_key
-                           and isinstance(state.get("source_meta"), dict))
+                           and isinstance(state.get("source_meta"), dict)
+                           # live/upcoming status changes; always re-check it
+                           and state["source_meta"].get("live_status")
+                           not in ingest.TRANSIENT_LIVE)
             if cached_meta:
                 meta = state["source_meta"]
             else:
@@ -234,6 +270,10 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                 state["source_meta"] = meta
                 state["cache"]["source_meta"] = source_key
                 save_project(path, state)
+            if is_url and meta.get("live_status") in ingest.BLOCKED_LIVE:
+                # Downloading a live URL would record until the stream ends,
+                # silently and with no way to stop it. Recording is separate.
+                raise ValueError(ingest.live_block_message(meta))
             long = bool(meta.get("long", ingest.is_long_source(meta)))
 
             source = Path(state.get("video", "__missing__"))

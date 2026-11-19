@@ -41,6 +41,14 @@ CLIENT_FILE = "youtube_client.bin"
 TOKEN_FILE = "youtube_token.bin"
 FLOW_TIMEOUT = 300          # seconds to finish signing in
 REFRESH_MARGIN = 120        # refresh this many seconds before expiry
+UPLOAD_ENDPOINT = "https://www.googleapis.com/upload/youtube/v3/videos"
+# Quota buckets (https://developers.google.com/youtube/data/determine_quota_cost):
+# videos.insert and search.list each have their own bucket (default 100 calls
+# per day, 1 per call); every other method shares the 10,000 units/day bucket.
+UPLOAD_BUCKET = "videos.insert"
+GENERAL_BUCKET = "general"
+GENERAL_COSTS = {("GET", "channels"): 1, ("GET", "videos"): 1,
+                 ("POST", "thumbnails/set"): 50}
 _ENTROPY = b"chopify-youtube-v1"
 
 
@@ -178,6 +186,9 @@ class YouTubeAccount:
         self.clock = clock
         self.lock = threading.RLock()
         self.flow = None
+        # quota_hook(bucket, units) is told about every Data API request
+        # before it is sent (the upload queue keeps the daily ledger).
+        self.quota_hook = None
 
     # ----------------------------------------------------------- client
     @property
@@ -362,10 +373,18 @@ class YouTubeAccount:
             raise AuthError(f"Could not refresh YouTube access (HTTP {status}).")
 
     def authorized(self, method, url, headers=None, body=None, timeout=120):
-        """API call with a fresh token; refreshes once on 401."""
+        """API call with a fresh token; refreshes once on 401.
+
+        Every request that reaches a quota-charged method is counted before it
+        is sent, including retries and requests that fail ("all API requests,
+        including invalid requests, incur a quota cost of at least one point").
+        """
         for attempt in range(2):
             token = self.access_token(force_refresh=attempt == 1)
             all_headers = {"Authorization": f"Bearer {token}", **(headers or {})}
+            charge = quota_charge(method, url)
+            if charge and self.quota_hook:
+                self.quota_hook(*charge)
             status, response_headers, data = self.http(method, url, all_headers, body, timeout)
             if status != 401:
                 return status, response_headers, data
@@ -405,6 +424,22 @@ class YouTubeAccount:
             return {"disconnected": True, "revoked": revoked}
 
 
+def quota_charge(method, url):
+    """(bucket, units) a request costs, or None (e.g. resumable upload bytes).
+
+    Sending the video bytes to an upload session and asking a session how
+    much arrived are part of the single videos.insert call; Google documents
+    no separate charge for them.
+    """
+    path = urlsplit(url).path
+    if method == "POST" and url.startswith(UPLOAD_ENDPOINT) and "upload_id=" not in url:
+        return UPLOAD_BUCKET, 1
+    if url.startswith(API + "/"):
+        resource = path.split("/youtube/v3/", 1)[-1]
+        return GENERAL_BUCKET, GENERAL_COSTS.get((method, resource), 1)
+    return None
+
+
 def _mask(client_id):
     head = client_id.split("-")[0]
     return head[:4] + "…" + ".apps.googleusercontent.com"
@@ -414,6 +449,8 @@ def main():
     """python youtube_auth.py client <client_secret.json> | connect | status | disconnect"""
     import webbrowser
     account = YouTubeAccount()
+    import youtube_upload
+    youtube_upload.UploadQueue(account)     # attaches the quota ledger hook
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
     try:
         if command == "client":

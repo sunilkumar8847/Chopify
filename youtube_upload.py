@@ -20,11 +20,17 @@ arrived and continues from there - and if YouTube already finished it, the
 entry is simply marked uploaded. That, plus refusing a file whose fingerprint
 is already uploaded, is what prevents duplicates.
 
-Quota: videos.insert costs 1600 units of the default 10,000/day; the quota
-day resets at midnight Pacific Time. The queue keeps its own ledger, never
-starts an upload that would exceed the configured budget, and parks entries
-in quota_wait when YouTube says the quota (or the channel's upload limit) is
-exhausted.
+Quota (YouTube Data API v3, granular quota system since June 2026):
+* videos.insert has its own bucket: 100 calls per day by default, each call
+  1 unit. Every insert request counts, including failed ones and retries.
+* Every other method (channels.list, ...) shares a separate bucket of 10,000
+  units per day. search.list has a third bucket; Chopify does not use it.
+* Chopify's own "uploads per day" safety limit (default 6) is separate from
+  both and counts uploads started.
+The quota day resets at midnight Pacific Time. The queue keeps a ledger of
+all three, never starts an upload that would exceed any of them, and parks
+entries in quota_wait when YouTube says a quota (or the channel's upload
+limit) is exhausted.
 """
 import hashlib
 import json
@@ -49,9 +55,9 @@ STATES = ("draft", "queued", "uploading", "uploaded", "quota_wait", "failed",
           "cancelled")
 CHUNK = 8 * 1024 * 1024           # multiple of 256 KiB, as the API requires
 DEFAULT_SETTINGS = {
-    "daily_quota_units": 10000,   # Google's default project quota
-    "upload_cost": 1600,          # videos.insert
-    "max_uploads_per_day": 6,
+    "upload_quota_calls": 100,     # videos.insert bucket (1 per call)
+    "general_quota_units": 10000,  # all other methods (channels.list = 1)
+    "max_uploads_per_day": 6,      # Chopify's own safety limit
     "privacy": "private",         # new uploads default to private
     "category_id": "22",
     "made_for_kids": False,
@@ -59,6 +65,11 @@ DEFAULT_SETTINGS = {
 }
 SHORTS_MAX_SECONDS = 180
 RETRY_ATTEMPTS = 5                # transient errors per run, with backoff
+EMPTY_DAY = {"upload_calls": 0,          # videos.insert requests (upload bucket)
+             "general_units": 0,         # other Data API methods (general bucket)
+             "uploads_started": 0,       # sessions created (Chopify's limit)
+             "upload_bucket_exhausted": False,
+             "general_exhausted": False}
 AUTO_RETRY_DELAY = 15 * 60        # then the worker tries again later
 RETRYABLE_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "backendError",
                      "internalError"}
@@ -183,6 +194,7 @@ class UploadQueue:
         self.chunk_size = chunk_size
         self.probe = probe
         self.lock = threading.RLock()
+        account.quota_hook = self.record_api_call
 
     # ----------------------------------------------------------- storage
     def entries(self):
@@ -220,12 +232,10 @@ class UploadQueue:
             if key not in DEFAULT_SETTINGS:
                 raise UploadError(f"Unknown upload setting: {key}")
             settings[key] = value
-        for key in ("daily_quota_units", "upload_cost", "max_uploads_per_day"):
+        for key in ("upload_quota_calls", "general_quota_units", "max_uploads_per_day"):
             value = settings[key]
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10_000_000:
                 raise UploadError(f"{key} must be a whole number.")
-        if settings["upload_cost"] < 1:
-            raise UploadError("upload_cost must be at least 1.")
         publish_meta.clean({"title": "x", "privacy": settings["privacy"],
                             "category_id": settings["category_id"],
                             "made_for_kids": settings["made_for_kids"]})
@@ -234,28 +244,59 @@ class UploadQueue:
         _atomic(self.dir / SETTINGS_FILE, settings)
         return settings
 
+    def _today(self, ledger, day):
+        raw = ledger.get(day) or {}
+        return {key: raw.get(key, default) for key, default in EMPTY_DAY.items()}
+
     def usage(self):
-        """Today's quota use (quota day = Pacific Time)."""
+        """Today's use of each quota bucket and of Chopify's own limit.
+
+        The quota day is the Pacific Time calendar day (YouTube resets every
+        bucket at midnight PT).
+        """
         day = quota_day(self.clock())
-        ledger = _read(self.dir / USAGE_FILE, {})
-        today = ledger.get(day, {"units": 0, "uploads": 0, "exhausted": False})
+        today = self._today(_read(self.dir / USAGE_FILE, {}), day)
         settings = self.settings()
-        left_units = settings["daily_quota_units"] - today["units"]
-        left_uploads = settings["max_uploads_per_day"] - today["uploads"]
-        possible = 0 if today.get("exhausted") else max(0, min(
-            left_units // settings["upload_cost"], left_uploads))
-        return {"day": day, **today, "uploads_left_today": possible,
+        upload_left = max(0, settings["upload_quota_calls"] - today["upload_calls"])
+        general_left = max(0, settings["general_quota_units"] - today["general_units"])
+        app_left = max(0, settings["max_uploads_per_day"] - today["uploads_started"])
+        blocked = None
+        if today["upload_bucket_exhausted"] or upload_left < 1:
+            blocked = "upload_quota"
+        elif app_left < 1:
+            blocked = "app_limit"
+        return {"day": day, **today,
+                "upload_quota_calls": settings["upload_quota_calls"],
+                "upload_calls_left": upload_left,
+                "general_quota_units": settings["general_quota_units"],
+                "general_units_left": general_left,
+                "max_uploads_per_day": settings["max_uploads_per_day"],
+                "app_uploads_left": app_left,
+                "uploads_left_today": 0 if blocked else min(upload_left, app_left),
+                "blocked_by": blocked,
                 "resets_at": next_quota_reset(self.clock())}
 
-    def _record_usage(self, units=0, uploads=0, exhausted=None):
+    def record_api_call(self, bucket, units):
+        """quota_hook for the account: one Data API request is about to be sent."""
+        if bucket == youtube_auth.UPLOAD_BUCKET:
+            self._record_usage(upload_calls=units)
+        else:
+            self._record_usage(general_units=units)
+
+    def _record_usage(self, upload_calls=0, general_units=0, uploads_started=0,
+                      upload_bucket_exhausted=None, general_exhausted=None):
         with self.lock:
             day = quota_day(self.clock())
             ledger = _read(self.dir / USAGE_FILE, {})
-            today = ledger.setdefault(day, {"units": 0, "uploads": 0, "exhausted": False})
-            today["units"] += units
-            today["uploads"] += uploads
-            if exhausted is not None:
-                today["exhausted"] = exhausted
+            today = self._today(ledger, day)
+            today["upload_calls"] += upload_calls
+            today["general_units"] += general_units
+            today["uploads_started"] += uploads_started
+            if upload_bucket_exhausted is not None:
+                today["upload_bucket_exhausted"] = upload_bucket_exhausted
+            if general_exhausted is not None:
+                today["general_exhausted"] = general_exhausted
+            ledger[day] = today
             for old in sorted(ledger)[:-14]:      # keep two weeks
                 ledger.pop(old)
             _atomic(self.dir / USAGE_FILE, ledger)
@@ -448,9 +489,15 @@ class UploadQueue:
     def _start_session(self, entry_id, size):
         entry = self.get(entry_id)
         usage, settings = self.usage(), self.settings()
-        if usage["uploads_left_today"] < 1:
-            raise _Stop("quota_wait", "Today's upload quota is used up; this clip "
-                        "uploads automatically after the quota resets.",
+        if usage["blocked_by"] == "upload_quota":
+            raise _Stop("quota_wait", "Today's YouTube upload quota (videos.insert "
+                        f"calls: {usage['upload_calls']} of {usage['upload_quota_calls']}) "
+                        "is used up; this clip uploads automatically after the "
+                        "reset at midnight Pacific Time.", usage["resets_at"])
+        if usage["blocked_by"] == "app_limit":
+            raise _Stop("quota_wait", "Chopify's limit of "
+                        f"{usage['max_uploads_per_day']} upload(s) per day is reached; "
+                        "this clip uploads automatically after midnight Pacific Time.",
                         usage["resets_at"])
         meta = entry["metadata"]
         resource = {
@@ -469,10 +516,11 @@ class UploadQueue:
                 "X-Upload-Content-Length": str(size),
                 "X-Upload-Content-Type": "video/mp4"},
             json.dumps(resource).encode("utf-8"), 120)
+        # (the insert call itself was counted in the upload bucket by the
+        # account's quota hook, before it was sent - even if it fails)
         if status != 200 or not headers.get("location"):
             self._api_error(status, body)
-        # videos.insert is charged now, whether or not the bytes finish today
-        self._record_usage(units=settings["upload_cost"], uploads=1)
+        self._record_usage(uploads_started=1)       # Chopify's daily limit
         session = headers["location"]
         self._mutate(entry_id, lambda e: e.update(session=session, progress=0.0,
                                                   state="uploading"))
@@ -507,9 +555,11 @@ class UploadQueue:
         if status >= 500 or reason in RETRYABLE_REASONS or status == 429:
             raise _Transient(f"HTTP {status} {reason}".strip())
         if reason in QUOTA_REASONS:
-            self._record_usage(exhausted=True)
-            raise _Stop("quota_wait", "YouTube's daily API quota is used up; the "
-                        "upload continues after it resets (midnight Pacific Time).",
+            # The queue only calls videos.insert and its upload session, so
+            # the exhausted bucket is the upload bucket.
+            self._record_usage(upload_bucket_exhausted=True)
+            raise _Stop("quota_wait", "YouTube says today's upload quota is used up; "
+                        "the upload continues after the reset at midnight Pacific Time.",
                         next_quota_reset(self.clock()))
         if reason in CHANNEL_LIMIT_REASONS:
             raise _Stop("quota_wait", "This channel reached YouTube's daily upload "

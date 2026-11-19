@@ -402,7 +402,10 @@ def test_approved_clip_uploads_in_chunks_as_private(connected, google, clock, tm
     assert sent["snippet"]["title"] == "He jumped the gap"
     assert "#Shorts" in sent["snippet"]["description"]
     assert sent["snippet"]["tags"] == ["bike jump", "stunt"]
-    assert queue.usage()["units"] == 1600 and queue.usage()["uploads"] == 1
+    usage = queue.usage()
+    # one videos.insert call (1 unit in its own bucket), not 1600 units
+    assert usage["upload_calls"] == 1 and usage["uploads_started"] == 1
+    assert usage["general_units"] == 0, "uploading costs nothing in the general bucket"
 
 
 def test_uploaded_clip_is_never_uploaded_again(connected, google, clock, tmp_path):
@@ -493,7 +496,11 @@ def test_api_quota_exhaustion_waits_for_the_pacific_reset(connected, google, clo
     assert waiting["state"] == "quota_wait"
     assert waiting["next_attempt"] == youtube_upload.next_quota_reset(clock.now)
     assert queue.get(second["id"])["state"] == "queued", "not hammered after a quota error"
-    assert queue.usage()["exhausted"] and queue.usage()["uploads_left_today"] == 0
+    usage = queue.usage()
+    assert usage["upload_bucket_exhausted"] and usage["uploads_left_today"] == 0
+    assert usage["blocked_by"] == "upload_quota"
+    assert usage["upload_calls"] == 1, "the refused insert still counts"
+    assert usage["uploads_started"] == 0
 
 
 def test_channel_upload_limit_waits_a_day(connected, google, clock, tmp_path):
@@ -521,10 +528,137 @@ def test_configured_daily_limit_is_respected_without_calling_youtube(connected, 
     assert queue.get(second["id"])["state"] == "uploaded"
 
 
-def test_quota_units_budget(connected, google, clock, tmp_path):
+def test_default_quota_model_matches_youtube():
+    settings = youtube_upload.DEFAULT_SETTINGS
+    assert settings["upload_quota_calls"] == 100       # videos.insert bucket
+    assert settings["general_quota_units"] == 10000    # all other methods
+    assert settings["max_uploads_per_day"] == 6        # Chopify's own limit
+    assert settings["privacy"] == "private"
+    assert "upload_cost" not in settings and "daily_quota_units" not in settings
+
+
+def test_requests_are_charged_to_the_right_bucket():
+    charge = youtube_auth.quota_charge
+    insert = youtube_auth.UPLOAD_ENDPOINT + "?uploadType=resumable&part=snippet,status"
+    assert charge("POST", insert) == ("videos.insert", 1)
+    assert charge("PUT", youtube_auth.UPLOAD_ENDPOINT + "?uploadType=resumable&upload_id=x") is None
+    assert charge("PUT", "https://upload.example/session/1") is None
+    assert charge("GET", API + "/channels?part=snippet&mine=true") == ("general", 1)
+    assert charge("POST", API + "/thumbnails/set?videoId=x") == ("general", 50)
+    assert charge("POST", TOKEN_URI) is None and charge("POST", REVOKE_URI) is None
+
+
+def test_channel_lookup_is_counted_in_the_general_bucket(account, google, clock, tmp_path):
+    queue = queue_for(account, clock)                 # attaches the ledger
+    sign_in(account, google)                           # calls channels.list once
+    usage = queue.usage()
+    assert usage["general_units"] == 1 and usage["upload_calls"] == 0
+
+
+def test_app_limit_and_youtube_upload_bucket_are_independent(connected, clock):
     queue = queue_for(connected, clock)
-    queue.update_settings({"daily_quota_units": 3000})   # room for one 1600-unit upload
-    assert queue.usage()["uploads_left_today"] == 1
+    queue.update_settings({"max_uploads_per_day": 6, "upload_quota_calls": 2})
+    assert queue.usage()["uploads_left_today"] == 2        # YouTube bucket is smaller
+    queue.update_settings({"max_uploads_per_day": 1, "upload_quota_calls": 100})
+    assert queue.usage()["uploads_left_today"] == 1        # Chopify limit is smaller
+    usage = queue.usage()
+    assert usage["upload_calls_left"] == 100 and usage["app_uploads_left"] == 1
+
+
+def test_failed_and_retried_inserts_each_count(connected, google, clock, tmp_path):
+    queue = queue_for(connected, clock)
+    entry = approved(queue, tmp_path)
+    responses = iter([(503, "backendError"), (500, "backendError"), None])
+    original = google.__call__
+
+    def flaky(method, url, headers=None, body=None, timeout=60):
+        if method == "POST" and url.startswith(UPLOAD_URI):
+            failure = next(responses)
+            if failure:
+                return failure[0], {}, json.dumps({"error": {"errors": [
+                    {"reason": failure[1]}]}}).encode()
+        return original(method, url, headers, body, timeout)
+    queue.account.http = flaky
+    queue.process()
+    usage = queue.usage()
+    assert queue.get(entry["id"])["state"] == "uploaded"
+    assert usage["upload_calls"] == 3, "two failed inserts + the successful one"
+    assert usage["uploads_started"] == 1, "only one upload actually started"
+
+
+def test_resuming_does_not_spend_more_upload_quota(connected, google, clock, tmp_path):
+    queue = queue_for(connected, clock)
+    entry = approved(queue, tmp_path)
+    google.raise_on_put = 99
+    with pytest.raises(Exception):
+        queue._upload(entry["id"], None)
+    assert queue.usage()["upload_calls"] == 1
+    google.raise_on_put = 0
+    queue.process()
+    usage = queue.usage()
+    assert queue.get(entry["id"])["state"] == "uploaded"
+    assert usage["upload_calls"] == 1 and usage["uploads_started"] == 1
+    assert len(google.inserts) == 1
+
+
+def test_upload_bucket_limit_blocks_before_calling_youtube(connected, google, clock, tmp_path):
+    queue = queue_for(connected, clock)
+    queue.update_settings({"upload_quota_calls": 1})
+    first = approved(queue, tmp_path, "a.mp4", 1000)
+    second = approved(queue, tmp_path, "b.mp4", 1200)
+    queue.process()
+    assert queue.get(first["id"])["state"] == "uploaded"
+    waiting = queue.get(second["id"])
+    assert waiting["state"] == "quota_wait" and "videos.insert" in waiting["error"]
+    assert waiting["next_attempt"] == youtube_upload.next_quota_reset(clock.now)
+    assert len(google.inserts) == 1
+
+
+def test_app_limit_message_names_the_chopify_limit(connected, google, clock, tmp_path):
+    queue = queue_for(connected, clock)
+    queue.update_settings({"max_uploads_per_day": 1})
+    approved(queue, tmp_path, "a.mp4", 1000)
+    second = approved(queue, tmp_path, "b.mp4", 1200)
+    queue.process()
+    assert "Chopify's limit of 1 upload" in queue.get(second["id"])["error"]
+
+
+def test_quota_counters_reset_on_the_pacific_day(connected, google, clock, tmp_path):
+    queue = queue_for(connected, clock)
+    approved(queue, tmp_path)
+    queue.process()
+    assert queue.usage()["upload_calls"] == 1
+    clock.now = queue.usage()["resets_at"]
+    usage = queue.usage()
+    assert usage["upload_calls"] == 0 and usage["uploads_started"] == 0
+    assert usage["general_units"] == 0 and usage["uploads_left_today"] == 6
+
+
+def test_old_ledger_and_settings_files_still_load(connected, clock):
+    queue = queue_for(connected, clock)
+    day = youtube_upload.quota_day(clock.now)
+    (queue.dir / youtube_upload.USAGE_FILE).write_text(json.dumps(
+        {day: {"units": 1600, "uploads": 1, "exhausted": False}}))
+    (queue.dir / youtube_upload.SETTINGS_FILE).write_text(json.dumps(
+        {"daily_quota_units": 10000, "upload_cost": 1600, "max_uploads_per_day": 4}))
+    usage = queue.usage()
+    assert usage["max_uploads_per_day"] == 4            # still honoured
+    assert usage["upload_quota_calls"] == 100           # old keys ignored
+    assert "units" not in usage and usage["uploads_left_today"] >= 1
+
+
+def test_privacy_is_always_sent_explicitly(connected, google, clock, tmp_path):
+    # YouTube makes an upload PUBLIC when privacyStatus is missing.
+    queue = queue_for(connected, clock)
+    entry = queue.draft("proj1", make_clip(tmp_path), {"title": "No privacy given"})
+    queue.approve(entry["id"], confirm=True)
+    queue.process()
+    assert google.inserts[0]["status"]["privacyStatus"] == "private"
+    queue.update_settings({"privacy": "unlisted"})
+    other = queue.draft("proj1", make_clip(tmp_path, "b.mp4", 999), {"title": "b"})
+    queue.approve(other["id"], confirm=True)
+    queue.process()
+    assert google.inserts[1]["status"]["privacyStatus"] == "unlisted"
 
 
 def test_bad_metadata_fails_with_a_hint_and_no_retry(connected, google, clock, tmp_path):
@@ -582,7 +716,8 @@ def test_settings_are_validated_and_saved(connected, clock):
     saved = queue.update_settings({"max_uploads_per_day": 3, "privacy": "unlisted"})
     assert saved["max_uploads_per_day"] == 3 and queue.settings()["privacy"] == "unlisted"
     for bad in ({"max_uploads_per_day": -1}, {"privacy": "everyone"},
-                {"upload_cost": 0}, {"nonsense": 1}):
+                {"upload_quota_calls": -1}, {"general_quota_units": 1.5},
+                {"upload_cost": 1600}, {"nonsense": 1}):
         with pytest.raises((UploadError, ValueError)):
             queue.update_settings(bad)
 

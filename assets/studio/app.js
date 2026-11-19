@@ -1285,12 +1285,22 @@ function renderYouTube() {
   $("#yt-disconnect").hidden = !account.connected;
   $("#yt-settings-form").hidden = !account.connected;
   const usage = yt.usage;
-  $("#yt-usage").textContent = account.connected
-    ? `${usage.uploads_left_today} upload(s) left today · ${usage.units} quota units used · resets ${formatReset(usage.resets_at)}`
+  const blocked = {
+    upload_quota: "YouTube's upload quota is used up for today.",
+    app_limit: "Chopify's daily upload limit is reached.",
+  }[usage.blocked_by];
+  $("#yt-usage").innerHTML = account.connected
+    ? [
+        `<li><strong>${usage.uploads_left_today}</strong> upload(s) can start today${blocked ? ` – ${escapeHTML(blocked)}` : ""}</li>`,
+        `<li>Chopify limit: ${usage.uploads_started} of ${usage.max_uploads_per_day} uploads started</li>`,
+        `<li>YouTube upload quota: ${usage.upload_calls} of ${usage.upload_quota_calls} videos.insert calls (each attempt counts)</li>`,
+        `<li>YouTube quota for other calls: ${usage.general_units} of ${usage.general_quota_units} units</li>`,
+        `<li>All reset at midnight Pacific Time (${escapeHTML(formatReset(usage.resets_at))} your time)</li>`,
+      ].join("")
     : "";
   const form = $("#yt-settings-form");
   if (!form.contains(document.activeElement))
-    for (const key of ["max_uploads_per_day", "daily_quota_units", "upload_cost", "privacy"])
+    for (const key of ["max_uploads_per_day", "upload_quota_calls", "general_quota_units", "privacy"])
       form.elements[key].value = yt.settings[key];
   if (state.detail) renderOutputs(state.detail);
   if (state.publishEntry && $("#publish-dialog").open) {
@@ -1481,8 +1491,8 @@ $("#yt-settings-form").addEventListener(
     await api("/api/youtube/settings", {
       settings: {
         max_uploads_per_day: Number(form.elements.max_uploads_per_day.value),
-        daily_quota_units: Number(form.elements.daily_quota_units.value),
-        upload_cost: Number(form.elements.upload_cost.value),
+        upload_quota_calls: Number(form.elements.upload_quota_calls.value),
+        general_quota_units: Number(form.elements.general_quota_units.value),
         privacy: form.elements.privacy.value,
       },
     });

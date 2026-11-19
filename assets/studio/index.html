@@ -750,41 +750,45 @@
                 </button>
                 <button id="yt-disconnect" type="button" hidden>Disconnect</button>
               </div>
-              <p id="yt-usage" class="hint"></p>
+              <ul id="yt-usage" class="hint yt-usage"></ul>
               <form id="yt-settings-form" hidden>
+                <label
+                  >Chopify limit: uploads per day<input
+                    name="max_uploads_per_day"
+                    type="number"
+                    min="0"
+                    max="1000"
+                    required
+                /></label>
                 <div class="pair">
                   <label
-                    >Uploads per day<input
-                      name="max_uploads_per_day"
+                    >YouTube upload quota (videos.insert calls/day)<input
+                      name="upload_quota_calls"
                       type="number"
                       min="0"
-                      max="1000"
+                      max="10000000"
                       required /></label
                   ><label
-                    >Daily quota units<input
-                      name="daily_quota_units"
+                    >YouTube quota for other calls (units/day)<input
+                      name="general_quota_units"
                       type="number"
                       min="0"
                       max="10000000"
                       required
                   /></label>
                 </div>
-                <div class="pair">
-                  <label
-                    >Default privacy<select name="privacy">
-                      <option value="private">Private</option>
-                      <option value="unlisted">Unlisted</option>
-                      <option value="public">Public</option>
-                    </select></label
-                  ><label
-                    >Units per upload<input
-                      name="upload_cost"
-                      type="number"
-                      min="1"
-                      max="100000"
-                      required
-                  /></label>
-                </div>
+                <label
+                  >Default privacy<select name="privacy">
+                    <option value="private">Private</option>
+                    <option value="unlisted">Unlisted</option>
+                    <option value="public">Public</option>
+                  </select></label
+                >
+                <p class="hint">
+                  Google's defaults are 100 upload calls and 10,000 units per
+                  day per Cloud project. Change them only if Google granted
+                  your project more. Every upload attempt counts as one call.
+                </p>
                 <button type="submit" class="wide">Save upload settings</button>
               </form>
             </details>

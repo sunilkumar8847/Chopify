@@ -1159,3 +1159,10 @@ button:active {
   justify-content: flex-end;
   margin-top: 12px;
 }
+.yt-usage {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+.yt-usage li {
+  margin: 2px 0;
+}

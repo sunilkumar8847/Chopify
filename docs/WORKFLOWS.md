@@ -103,10 +103,13 @@ is Roman script and sounds like the same word, so the model cannot translate
 or drop words. Rules alone are the default (faster, and the 3B model rarely
 improves on them).
 
-Titles, descriptions, tags and hashtags must not contain Devanagari. AI
-output with Devanagari is retried and otherwise transliterated (with a note
-to review it); a manual edit with Devanagari is refused with a suggested
-Roman spelling. Projects created before this policy are upgraded without
+Titles, descriptions, tags and hashtags must not contain Devanagari, and for
+Hindi or Hinglish speech they must be Hinglish, not English. An AI answer that
+is English, Devanagari, repetitive or copied is retried once with a specific
+instruction and otherwise replaced by the speaker's own best lines (with a
+note); a manual edit with Devanagari is refused with a suggested Roman
+spelling. Transliteration favours everyday spellings (mast, saaf, liye,
+rehna, gaye). Projects created before this policy are upgraded without
 transcribing again: hooks and clip titles are converted when the project is
 opened by a job, publish drafts are re-drafted when you open them, and
 **Export again** burns in Hinglish captions (Studio marks such clips).

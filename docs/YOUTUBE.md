@@ -59,12 +59,18 @@ has finished processing (50 quota units each, from the general bucket).
 change it in YouTube Studio. (Chopify still saves a `.png` poster next to each
 clip that you can upload there.)
 
-**Language.** Titles, descriptions, tags and hashtags are written in Roman
-script: English clips in English, Hindi clips in natural Hinglish. Devanagari
-is never accepted — if the AI writes it, Chopify asks again and otherwise
-transliterates it (and says so); if you type it, Chopify refuses and suggests
-a Roman spelling. Drafts made before this rule are re-drafted when opened;
-uploaded videos are not changed.
+**Language.** Titles, descriptions, tags and hashtags follow the speech and
+are always Roman script: English clips get English; Hindi and Hinglish clips
+get natural Hinglish. For a Hindi/Hinglish clip each AI title and description
+is checked: English grammar (an English sentence with a stray Hindi word),
+Devanagari, a copied summary or video title, repeated phrases or copied
+instructions are not accepted. Chopify asks the model once more with a
+specific Hinglish instruction; if that still fails, the field is filled with
+the speaker's own best lines from the Roman transcript, and the draft says
+which field was replaced and why. If you type Devanagari, Chopify refuses and
+suggests a Roman spelling. Unpublished AI drafts made under an older rule are
+re-drafted when opened (drafts you edited are kept); uploaded videos are never
+changed.
 
 **Automation.** Batch processing and channel monitoring (see
 [AUTOMATION.md](AUTOMATION.md)) only create clips. They never draft or approve

@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continues where it stopped.
 
 ### Changed
+- Hindi/Hinglish YouTube metadata: English, Devanagari, repetitive or copied
+  AI titles/descriptions are retried with a Hinglish instruction and otherwise
+  replaced by the speaker's own lines (noted in the draft); English speech
+  stays English. Outdated unpublished AI drafts are re-drafted when opened.
+- More natural Hinglish transliteration (mast, saaf, liye, gaye, rehna);
+  caption render caches are refreshed (policy version 2).
 - `job.log` is appended per run (rotated at 2 MB) instead of overwritten.
 - Studio ignores browser disconnects (WinError 10053) instead of printing
   tracebacks.

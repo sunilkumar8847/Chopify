@@ -182,7 +182,7 @@ def test_existing_project_text_is_upgraded_without_reprocessing(tmp_path):
     (tmp_path / "segments.json").write_text(json.dumps(segments, ensure_ascii=False), "utf-8")
     assert projects.apply_text_policy(tmp_path, {}) == 2
     out = json.loads((tmp_path / "segments.json").read_text("utf-8"))[0]
-    assert out["hook"] == "jaaed beech saait pe hai kya"
+    assert out["hook"] == "jaayed beech saait pe hai kya"
     assert out["hook_original"] == "जाएद बीच साइट पे है क्या"
     assert out["judge"]["summary"] == "A queue joke." and not DEVANAGARI(out["judge"]["reason"])
     assert projects.apply_text_policy(tmp_path, {}) == 0, "idempotent"

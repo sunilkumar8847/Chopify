@@ -425,12 +425,15 @@ class Studio:
         settings = self.uploads.settings()
         existing = [e for e in self.uploads.entries()
                     if e["file"] == str(clip) and e["state"] != "cancelled"]
-        if (existing and not regenerate
-                and existing[0]["state"] not in ("uploading", "uploaded")
-                and publish_meta.devanagari_fields(existing[0]["metadata"])):
-            # Drafted before the Roman Hinglish policy: draft it again.
-            # Uploaded videos are never touched.
-            regenerate = True
+        if existing and not regenerate and existing[0]["state"] not in ("uploading", "uploaded"):
+            meta = existing[0]["metadata"]
+            outdated = meta.get("policy") not in (None, publish_meta.POLICY)
+            # Drafted before the current language policy (an unedited AI draft
+            # still carries its old policy tag; a hand-edited one does not) or
+            # still containing Devanagari: draft it again. Uploaded videos and
+            # uploads in progress are never touched.
+            if outdated or publish_meta.devanagari_fields(meta):
+                regenerate = True
         if existing and not regenerate:
             return existing[0]
         meta = publish_meta.generate(info, publish_meta.provider_for(state["options"]),

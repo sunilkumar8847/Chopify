@@ -37,7 +37,8 @@ import jsoncache
 import llm as llm_mod
 
 VERSION = 1            # cache format
-POLICY_VERSION = 1     # bump to regenerate converted captions/metadata
+POLICY_VERSION = 2     # bump to regenerate converted captions/metadata
+# 2: more natural spellings (mast, saaf, liye, rehna), metadata language checks
 CACHE_FILE = "hinglish_cache.json"
 DISPLAY_FILE = "transcript.display.json"
 CHUNK_WORDS = 14       # words per LLM request
@@ -50,7 +51,7 @@ CONSONANTS = {
     "च": "ch", "छ": "chh", "ज": "j", "झ": "jh", "ञ": "n",
     "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh", "ण": "n",
     "त": "t", "थ": "th", "द": "d", "ध": "dh", "न": "n", "ऩ": "n",
-    "प": "p", "फ": "ph", "ब": "b", "भ": "bh", "म": "m",
+    "प": "p", "फ": "f", "ब": "b", "भ": "bh", "म": "m",   # saaf, fark (phir: dictionary)
     "य": "y", "र": "r", "ऱ": "r", "ल": "l", "ळ": "l", "ऴ": "l", "व": "v",
     "श": "sh", "ष": "sh", "स": "s", "ह": "h",
     # precomposed nukta letters
@@ -129,6 +130,14 @@ COMMON = {
     "सबसे": "sabse", "इसलिए": "isliye", "इसलिये": "isliye", "वैसे": "waise",
     "ऐसे": "aise", "ऐसा": "aisa", "ऐसी": "aisi", "जैसे": "jaise", "उधर": "udhar",
     "इधर": "idhar", "ऊपर": "upar", "नीचे": "neeche", "अंदर": "andar", "बाहर": "bahar",
+    "लिए": "liye", "लिये": "liye", "क्यूकि": "kyunki", "क्यूँकि": "kyunki",
+    "क्योंकी": "kyunki", "मस्त": "mast", "पता": "pata", "आया": "aaya", "आई": "aayi",
+    "यहांपे": "yahan pe", "वहांपे": "wahan pe", "मज़ेदार": "mazedaar", "मजेदार": "mazedaar",
+    "करूँ": "karun", "करूं": "karun", "जाऊँ": "jaun", "चलूँ": "chalun",
+    "एकदम": "ekdum", "सच्ची": "sacchi", "पक्का": "pakka", "ज़रूर": "zaroor",
+    "ज़रूरी": "zaroori", "जरूरी": "zaroori", "शायद": "shayad", "बिल्कुल": "bilkul",
+    "लड़की": "ladki", "लड़का": "ladka", "बच्चा": "baccha", "बच्चे": "bacche",
+    "उसका": "uska", "किसी": "kisi", "किसका": "kiska", "कहीं": "kahin", "नहीं।": "nahi.",
 }
 
 # English words that Whisper spells in Devanagari (gaming / creator talk).
@@ -175,6 +184,15 @@ ENGLISH = {
     "हाइलाइट": "highlight", "क्लिप": "clip", "क्लिप्स": "clips", "चिप्स": "chips",
     "पॉपकॉर्न": "popcorn", "स्नैक्स": "snacks", "पिक्चर": "picture",
     "पिच्चर": "picture", "जर्नी": "journey", "जॉर्नी": "journey",
+    "ब्रेक": "break", "कोड": "code", "माफिया": "mafia", "लाइट": "light",
+    "लाइट्स": "lights", "फ्रेम": "frame", "कस्टमर": "customer", "फ्यूचर": "future",
+    "अटैक": "attack", "ट्रैफिक": "traffic", "जेल": "jail", "अलार्म": "alarm",
+    "करेक्शन": "correction", "फैसिलिटी": "facility", "प्रिज़न": "prison",
+    "वीडियोज़": "videos", "सब्सक्राइबर": "subscriber", "सब्सक्राइबर्स": "subscribers",
+    "कमेंट्स": "comments", "लाइक्स": "likes", "इंस्टाग्राम": "Instagram",
+    "यूट्यूब": "YouTube", "जीटीए": "GTA", "स्क्रीन": "screen", "प्लान": "plan",
+    "बैंक": "bank", "रॉबरी": "robbery", "हाइस्ट": "heist", "गैंग": "gang",
+    "ब्रो": "bro", "ड्यूड": "dude", "सीन": "scene", "लेवल्स": "levels",
 }
 
 _SKELETON_STEPS = [("ph", "f"), ("ch", "C"), ("sh", "S"), ("th", "t"),
@@ -247,7 +265,10 @@ def _delete_schwas(units):
     # final inherent vowel goes, unless it follows a consonant cluster
     last = letters[-1]
     if last[1] == INHERENT:
-        cluster = len(letters) >= 2 and letters[-2][0] and letters[-2][1] == ""
+        # ...unless it follows a consonant cluster ending in r/y (mitra,
+        # satya); everyday words drop it (mast, dost, khatm -> khatam rule)
+        cluster = (len(letters) >= 2 and letters[-2][0] and letters[-2][1] == ""
+                   and last[0] in ("r", "y"))
         last[1] = "a" if cluster else ""
     # medial: C(a) between a vowel and a consonant+vowel loses its 'a'
     for k in range(len(letters) - 2, 0, -1):
@@ -276,6 +297,14 @@ def _transliterate(word):
             vowel = "u"                       # tu
         if extra == "h" and (cons or vowel) and not final:
             extra = ""                        # medial visarga: dukh
+        previous = units[index - 1][1] if index else ""
+        if not cons and previous and previous not in ("", INHERENT):
+            # a vowel right after a vowel: gaye, liye, aayi
+            if vowel == "e":
+                vowel = "ye"
+            elif (final and vowel in ("ee", "i")
+                  and previous in ("a", "aa", "o", "u", "oo")):
+                vowel = "yi"
         text = cons + vowel
         if nasal:
             following = next((units[j][0] for j in range(index + 1, len(units))
@@ -284,6 +313,9 @@ def _transliterate(word):
         out.append(text + extra)
     roman = "".join(out)
     roman = roman.replace("chchh", "cch").replace("chchh", "cch")
+    # spoken "ah" before a consonant: rehna, kehte, pehla, mehnga
+    roman = re.sub(r"^([bcdfgjklmnpqrstvwyz]h?)ah(?=[bcdfgjklmnpqrstvwxz])",
+                   r"\1eh", roman)
     return roman
 
 
@@ -312,6 +344,7 @@ def romanize_word(word):
             pieces.append(_transliterate(bare))
     roman = lead + "".join(pieces) + tail
     roman = DEVANAGARI_RE.sub("", roman)   # nothing unknown slips through
+    roman = re.sub(r"([aeiou])\1{3,}", r"\1\1\1", roman)   # "oooooo" -> "ooo"
     return strip_foreign(roman)
 
 

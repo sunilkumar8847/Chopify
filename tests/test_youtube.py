@@ -791,22 +791,141 @@ def test_ai_hinglish_metadata_is_kept_as_written():
     assert meta["source"] == "ai" and meta["title"] == "Papa ke saamne prank ulta pad gaya"
     assert "papa" in meta["hashtags"] and "Shorts" in meta["hashtags"]
     assert "Detected language: hi" in llm.prompts[0] and len(llm.prompts) == 1
-    assert "note" not in meta and meta["policy"] == "hinglish-roman"
+    assert "note" not in meta and meta["policy"] == publish_meta.POLICY
+    assert meta["language_style"] == "hinglish"
 
 
-def test_devanagari_from_the_model_is_retried_then_transliterated():
-    # Output policy: never Devanagari. Ask again; if the model insists,
-    # transliterate and tell the user to review.
+HINDI_CLIP = {"hook": "jaayed beech saait pe hai kya",
+              "language": "hi", "source_title": "MY FIRST DAY IN VICE CITY | GTA 6 GAMEPLAY #1",
+              "summary": "A person is trying to skip a car queue, but the queue is actually at their own house.",
+              "text": "शायद बीच साइड पे है क्या? क्योंकि मुझे पानी दिख रहा है! लेट्स गो! "
+                      "पहुँच गए हैं घर पे! ओओओओओओ! मस्त लग रहा है यार! फोन आ रहा है किसी का! "
+                      "वाई! वाई! वाई! लूसिया जेल में है और हम से बात कर रही है!"}
+
+
+def test_devanagari_from_the_model_is_retried_then_replaced_by_the_speakers_words():
+    # Output policy: never Devanagari. Ask again with a specific Hinglish
+    # instruction; if the model insists, use the speaker's own Roman lines.
     reply = {"title": "पापा के सामने prank उल्टा पड़ गया", "description": "पूरा पैसा वसूल।",
              "hashtags": ["prank", "हिंदी"], "tags": ["prank", "मज़ा"]}
     llm = FakeLLM(reply)
-    meta = publish_meta.generate({"hook": "papa", "text": "Bhai maine socha...",
-                                  "language": "hi"}, llm)
-    assert len(llm.prompts) == 3 and "Devanagari" in llm.prompts[1]
+    meta = publish_meta.generate(HINDI_CLIP, llm)
+    assert len(llm.prompts) == 2 and "not natural Hinglish" in llm.prompts[1]
     assert not publish_meta.devanagari_fields(meta)
-    assert meta["title"] == "paapa ke saamne prank ulta pad gaya"
-    assert "transliterated" in meta["note"]
-    assert "maza" in meta["tags"]
+    assert "speaker's own words" in meta["note"]
+    assert not publish_meta.is_english(meta["title"]) and not publish_meta.is_english(meta["description"])
+    assert "gameplay" in meta["tags"], "Devanagari tags replaced by the clip's keywords"
+    assert not {"dikh", "raha", "hai"} & set(meta["tags"])
+
+
+def test_english_description_for_a_hindi_clip_is_never_accepted():
+    english = {"title": "Aapke ghar pe queue hai yaar",
+               "description": "A person tries to skip a car queue but it is at their own house.",
+               "hashtags": ["gta6"], "tags": ["gta 6"]}
+    llm = FakeLLM(english)
+    meta = publish_meta.generate(HINDI_CLIP, llm)
+    assert len(llm.prompts) == 2
+    assert "Your description was not natural Hinglish" in llm.prompts[1]
+    assert meta["title"] == "Aapke ghar pe queue hai yaar", "the good title is kept"
+    description = meta["description"].split("\n\n")[0]
+    assert not publish_meta.is_english(description)
+    hindi, words = publish_meta.hinglish_score(description)
+    assert hindi >= 3 and hindi / words >= 0.3, description
+    assert "description (English)" in meta["note"]
+    assert "ooo" not in description.lower() and "Vaai" not in description
+
+
+def test_a_successful_hinglish_retry_is_used_as_written():
+    replies = iter([
+        {"title": "Car queue at home", "description": "A person tries to skip a queue.",
+         "hashtags": [], "tags": []},
+        {"title": "Ghar pe hi queue lag gayi yaar", "description":
+         "Queue skip karne gaye aur pata chala queue apne hi ghar pe hai!",
+         "hashtags": [], "tags": []}])
+
+    class Learner(FakeLLM):
+        def chat_json(self, system, user, schema=None):
+            self.prompts.append(user)
+            return next(replies)
+    llm = Learner()
+    meta = publish_meta.generate(HINDI_CLIP, llm)
+    assert len(llm.prompts) == 2 and "title and description" in llm.prompts[1]
+    assert meta["title"] == "Ghar pe hi queue lag gayi yaar" and "note" not in meta
+    assert meta["description"].startswith("Queue skip karne gaye")
+
+
+def test_copied_instructions_are_rejected():
+    llm = FakeLLM({"title": "short hook in Hinglish", "description":
+                   "What happens: A person is trying to skip a car queue.",
+                   "hashtags": [], "tags": []})
+    meta = publish_meta.generate(HINDI_CLIP, llm)
+    assert "hook in Hinglish" not in meta["title"] and "What happens" not in meta["description"]
+    assert "copied the instructions" in meta["note"]
+
+
+def test_repetitive_or_title_copying_descriptions_are_replaced_with_a_note():
+    for bad, problem in (("main peeche aaya, bahutal hai bahutal hai bahutal hai", "repetitive"),
+                         ("PROBLEM KARE JAAYEN, MY FIRST DAY IN VICE CITY BHAAG GAYA",
+                          "copied the video title")):
+        llm = FakeLLM({"title": "Ghar pe queue hai yaar", "description": bad,
+                       "hashtags": [], "tags": []})
+        meta = publish_meta.generate(HINDI_CLIP, llm)
+        assert bad not in meta["description"] and problem in meta["note"], problem
+
+
+def test_a_bad_field_is_never_kept_silently_even_without_good_speaker_lines():
+    clip = {"hook": "binya jaayen", "language": "hi", "summary": "",
+            "text": "प्रोब्लम करे बिन्या जाएं"}
+    llm = FakeLLM({"title": "Problems", "description": "A person tries to fix the problem.",
+                   "hashtags": [], "tags": []})
+    meta = publish_meta.generate(clip, llm)
+    assert not publish_meta.is_english(meta["description"].split("\n\n")[0])
+    assert "description (English)" in meta["note"]
+
+
+def test_romanized_hinglish_speech_keeps_hinglish():
+    clip = {"hook": "bhai", "language": "en",
+            "text": "Bhai aaj ka gameplay bahut crazy tha, mujhe expect nahi tha! "
+                    "Ye mission toh ekdum mast tha yaar."}
+    assert publish_meta.clip_style(clip) == "hinglish"
+    llm = FakeLLM({"title": "Crazy gameplay today", "description":
+                   "Today's gameplay was crazy and the mission was great.",
+                   "hashtags": [], "tags": []})
+    meta = publish_meta.generate(clip, llm)
+    assert not publish_meta.is_english(meta["description"].split("\n\n")[0])
+    assert "bahut crazy" in meta["description"] or "mast tha" in meta["description"]
+
+
+def test_english_speech_stays_english():
+    clip = {"hook": "nobody believed me", "language": "en",
+            "text": "Nobody believed me, bhai. Then I won the race and everyone went quiet."}
+    assert publish_meta.clip_style(clip) == "english"
+    reply = {"title": "Nobody believed I could win", "description": "Then I won the race.",
+             "hashtags": ["racing"], "tags": ["race"]}
+    llm = FakeLLM(reply)
+    meta = publish_meta.generate(clip, llm)
+    assert len(llm.prompts) == 1 and "spoken in Hindi" not in llm.prompts[0]
+    assert meta["title"] == "Nobody believed I could win" and "note" not in meta
+    assert meta["language_style"] == "english"
+
+
+def test_speaker_lines_pick_natural_hinglish_sentences():
+    lines = publish_meta.speaker_lines(HINDI_CLIP)
+    assert len(lines) == 2
+    for line in lines:
+        assert not publish_meta.is_english(line) and not any("ऀ" <= c <= "ॿ" for c in line)
+    assert all(not line.lower().startswith(("ooo", "vaai")) for line in lines)
+
+
+def test_english_check_uses_grammar_not_vocabulary():
+    for english in ("A person tries to skip a car queue but the queue is at their own house.",
+                    "A person tries to skip ghar", "GTA 6 MY FIRST DAY IN VICE CITY",
+                    "This is the craziest mission I have played."):
+        assert publish_meta.is_english(english), english
+    for hinglish_text in ("Jishaan ke ghar mein paani tapak raha hai", "Poora paisa vasool.",
+                          "Bhai aaj ka gameplay bahut crazy tha, mujhe expect nahi tha!",
+                          "Crazy car chase"):
+        assert not publish_meta.is_english(hinglish_text), hinglish_text
 
 
 def test_model_retry_can_fix_devanagari():
@@ -846,8 +965,10 @@ def test_manual_devanagari_edits_are_rejected_with_a_suggestion():
 def test_rule_fallback_metadata_is_roman():
     meta = publish_meta.generate({"hook": "भाई ये गेम", "text": "भाई ये गेम में फिसिक्स बहुत क्रेजी हैं!"},
                                  FakeLLM(ok=False))
-    assert meta["source"] == "rules" and meta["title"] == "Bhai ye game"
+    assert meta["source"] == "rules"
+    assert meta["title"] == "Bhai ye game mein physics bahut crazy hain!"
     assert not publish_meta.devanagari_fields(meta)
+    assert not publish_meta.is_english(meta["description"].split("\n\n")[0])
     assert "physics" in meta["tags"] and "hain" not in meta["tags"]
 
 
@@ -916,6 +1037,25 @@ def test_studio_publish_flow_needs_approval(server, tmp_path):
     edited = call(base, f"/api/uploads/{entry['id']}/metadata",
                   {"metadata": {**entry["metadata"], "title": "My edit"}}, httpd.app.token)
     assert edited["metadata"]["title"] == "My edit" and edited["state"] == "draft"
+
+
+def test_outdated_unpublished_drafts_are_redrafted_but_edits_and_uploads_are_kept(server, tmp_path):
+    httpd, base = server
+    app = httpd.app
+    project_id, clip = exported_project(httpd, tmp_path)
+    publish = lambda: call(base, f"/api/projects/{project_id}/publish",  # noqa: E731
+                           {"clip": clip.name}, app.token)
+    entry = publish()
+    old = {**entry["metadata"], "description": "Old English draft.", "policy": "hinglish-roman"}
+    app.uploads._mutate(entry["id"], lambda e: e.update(metadata=old))
+    assert publish()["metadata"]["description"] != "Old English draft.", "old AI draft redrafted"
+    edited = call(base, f"/api/uploads/{entry['id']}/metadata",
+                  {"metadata": {**entry["metadata"], "description": "Mera apna text."}}, app.token)
+    assert "policy" not in edited["metadata"]
+    assert publish()["metadata"]["description"].startswith("Mera apna text."), "edits are kept"
+    app.uploads._mutate(entry["id"], lambda e: e.update(
+        state="uploaded", metadata={**old, "title": "पुराना"}))
+    assert publish()["metadata"]["title"] == "पुराना", "uploaded entries are never changed"
 
 
 def test_studio_youtube_routes_need_the_studio_token(server, tmp_path):

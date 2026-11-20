@@ -207,3 +207,109 @@ def test_studio_launches_jobs_detached_from_terminal(tmp_path, monkeypatch):
         studio.close()
     assert "--no-input" in launched["cmd"]
     assert launched["stdin"] is subprocess.DEVNULL
+
+
+# --- Browser disconnects (ConnectionAbortedError, WinError 10053) ---------
+
+class _DeadSocket:
+    """A wfile whose peer has gone: Windows raises WinError 10053 on write."""
+    def __init__(self, ok_writes=0, error=ConnectionAbortedError):
+        self.ok_writes, self.error, self.data = ok_writes, error, b""
+
+    def write(self, data):
+        if self.ok_writes <= 0:
+            raise self.error(10053, "An established connection was aborted by the software in your host machine")
+        self.ok_writes -= 1
+        self.data += data
+        return len(data)
+
+    def flush(self):
+        pass
+
+
+def _bare_handler(wfile, headers=None):
+    import dashboard
+    handler = dashboard.Handler.__new__(dashboard.Handler)
+    handler.wfile = wfile
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = "GET /media HTTP/1.1"
+    handler.command = "GET"
+    handler.close_connection = False
+    handler.headers = headers or {}
+    return handler
+
+
+@pytest.mark.parametrize("error", [ConnectionAbortedError, ConnectionResetError, BrokenPipeError])
+def test_send_json_to_a_disconnected_browser_does_not_raise(error):
+    handler = _bare_handler(_DeadSocket(error=error))
+    handler.send_json({"ok": True})                   # must not raise
+    assert handler.client_gone and handler.close_connection
+    handler.wfile = _DeadSocket(ok_writes=99)
+    handler.send_json({"error": "Project or file not found."}, 404)
+    assert handler.wfile.data == b"", "nothing is written after the client left"
+
+
+def test_send_file_stops_quietly_when_the_player_cancels(tmp_path):
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"x" * 300_000)
+    handler = _bare_handler(_DeadSocket(ok_writes=2), {"Range": "bytes=0-"})
+    handler.send_file(media)                          # headers + 1 chunk, then abort
+    assert handler.client_gone
+
+
+def test_missing_media_is_a_clean_error_not_half_a_response(tmp_path):
+    handler = _bare_handler(_DeadSocket(ok_writes=99))
+    with pytest.raises(FileNotFoundError):
+        handler.send_file(tmp_path / "gone.mp4")
+    assert handler.wfile.data == b"" and not handler.client_gone
+
+
+def test_server_hides_only_disconnect_tracebacks(capsys):
+    import dashboard
+    server = dashboard.StudioServer.__new__(dashboard.StudioServer)
+    for error, shown in ((ConnectionAbortedError(10053, "aborted"), False),
+                         (ConnectionResetError(10054, "reset"), False),
+                         (RuntimeError("genuine bug"), True)):
+        try:
+            raise error
+        except Exception:
+            server.handle_error(None, ("127.0.0.1", 1))
+        err = capsys.readouterr().err
+        assert ("Traceback" in err) == shown, (error, err)
+
+
+def test_aborted_media_request_leaves_studio_working(server, capsys):
+    import socket
+    import struct
+    import projects
+    httpd, base = server
+    state = projects.create_project(httpd.app.root, "test.mp4", {})
+    path = projects.project_path(httpd.app.root, state["id"])
+    (path / "clips").mkdir()
+    (path / "clips" / "big.mp4").write_bytes(b"\0" * 16_000_000)
+    for _ in range(3):
+        sock = socket.create_connection(("127.0.0.1", httpd.server_port))
+        sock.sendall(f"GET /media/{state['id']}/clips/big.mp4 HTTP/1.1\r\n"
+                     f"Host: 127.0.0.1:{httpd.server_port}\r\nRange: bytes=0-\r\n\r\n".encode())
+        sock.recv(1024)
+        # RST like a browser cancelling the request (seek / project switch)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()
+    assert len(request(base, "/api/projects")["projects"]) == 1
+    import time
+    time.sleep(0.5)
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_application_connection_errors_are_still_reported(server, monkeypatch):
+    # A network failure *inside* Chopify (e.g. talking to Google) is a real
+    # error and must reach the user, not be mistaken for a closed tab.
+    httpd, base = server
+
+    def google_dropped():
+        raise ConnectionResetError(10054, "Google closed the connection")
+    monkeypatch.setattr(httpd.app.youtube, "disconnect", google_dropped)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        request(base, "/api/youtube/disconnect", {}, httpd.app.token)
+    assert exc.value.code == 400
+    assert "Google closed the connection" in json.load(exc.value)["error"]

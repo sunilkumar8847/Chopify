@@ -416,13 +416,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    # Set when the browser closed the connection while we were answering
+    # (a seek in the video player, a reload, a closed tab). Windows reports
+    # this as ConnectionAbortedError [WinError 10053] or ConnectionResetError
+    # [WinError 10054]. It is not an application error: the work behind the
+    # request has already happened, there is just nobody left to tell.
+    client_gone = False
+
+    def _client_left(self):
+        self.client_gone = True
+        self.close_connection = True
+
     def send_json(self, data, status=200):
+        if self.client_gone:
+            return
         body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except ConnectionError:
+            self._client_left()
 
     def valid_host(self):
         return self.headers.get("Host") == f"127.0.0.1:{self.server.server_port}"
@@ -492,8 +508,6 @@ class Handler(BaseHTTPRequestHandler):
             if filename in static:
                 return self.send_file(STATIC / static[filename])
             self.send_json({"error": "Not found."}, 404)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
         except (OSError, KeyError):
             self.send_json({"error": "Project or file not found."}, 404)
         except (ValueError, TypeError) as exc:
@@ -655,16 +669,18 @@ class Handler(BaseHTTPRequestHandler):
             if start > end or start >= size:
                 return self.send_json({"error": "Range outside file."}, 416)
             status = 206
-        self.send_response(status)
-        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(max(0, end - start + 1)))
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        try:
-            with path.open("rb") as file:
-                file.seek(start)
+        # Open first: a read error must become a clean 404, not a JSON body
+        # appended to headers that were already sent.
+        with path.open("rb") as file:
+            file.seek(start)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(max(0, end - start + 1)))
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
                 remaining = end - start + 1
                 while remaining > 0:
                     chunk = file.read(min(65536, remaining))
@@ -672,12 +688,22 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            except ConnectionError:
+                # Browsers cancel media range requests on every seek.
+                self._client_left()
+
+
+class StudioServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # A browser that disconnects while a request is being read is normal;
+        # every other unexpected error keeps its full traceback.
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
 
 
 def make_server(root="projects", port=8765):
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = StudioServer(("127.0.0.1", port), Handler)
     server.app = Studio(root)
     # Resume uploads the user already approved (e.g. interrupted by a restart).
     server.app.kick_uploads()

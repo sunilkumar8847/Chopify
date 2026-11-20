@@ -165,3 +165,53 @@ def test_chunked_transcription_merges_with_runtime_overlap(tmp_path, monkeypatch
         source, tmp_path, "tiny", "cpu", "int8", 20.0)
     data = json.loads((tmp_path / "transcript.json").read_text(encoding="utf-8"))
     assert [w["start"] for w in data["words"]] == [2.0, 12.0]
+
+
+# --- GPU: pip-installed CUDA DLLs are found without touching global PATH ---
+
+def _fake_venv(tmp_path, packages=("cublas", "cudnn")):
+    for name in packages:
+        (tmp_path / "Lib" / "site-packages" / "nvidia" / name / "bin").mkdir(parents=True)
+    return tmp_path
+
+
+def test_cuda_dll_dirs_lists_nvidia_wheel_bins(tmp_path):
+    prefix = _fake_venv(tmp_path)
+    found = download_and_transcribe.cuda_dll_dirs(prefix)
+    assert [p.parent.name for p in found] == ["cublas", "cudnn"]
+    assert download_and_transcribe.cuda_dll_dirs(tmp_path / "empty") == []
+
+
+def test_enable_cuda_dlls_changes_only_the_given_process_env(tmp_path, monkeypatch):
+    import os
+    prefix = _fake_venv(tmp_path)
+    added = []
+    monkeypatch.setattr(download_and_transcribe.os, "name", "nt")
+    monkeypatch.setattr(download_and_transcribe.os, "add_dll_directory",
+                        lambda d: added.append(d), raising=False)
+    env = {"PATH": r"C:\Windows"}
+    dirs = download_and_transcribe.enable_cuda_dlls(prefix, env)
+    assert len(dirs) == 2 and len(added) == 2
+    assert env["PATH"].split(os.pathsep)[-1] == r"C:\Windows"
+    assert env["PATH"].count("cublas") == 1
+    download_and_transcribe.enable_cuda_dlls(prefix, env)    # idempotent
+    assert env["PATH"].count("cublas") == 1
+
+
+def test_enable_cuda_dlls_is_a_no_op_without_cuda_wheels(tmp_path):
+    env = {"PATH": "x"}
+    assert download_and_transcribe.enable_cuda_dlls(tmp_path, env) == []
+    assert env == {"PATH": "x"}
+
+
+def test_cpu_model_load_does_not_touch_cuda(monkeypatch):
+    import sys, types
+    calls = []
+    monkeypatch.setattr(download_and_transcribe, "enable_cuda_dlls",
+                        lambda *a, **k: calls.append("cuda"))
+    fake = types.SimpleNamespace(WhisperModel=lambda *a, **k: ("model", a, k))
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    download_and_transcribe._load_model("tiny", "cpu", "int8")
+    assert calls == []
+    download_and_transcribe._load_model("tiny", "cuda", "default")
+    assert calls == ["cuda"]

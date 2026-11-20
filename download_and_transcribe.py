@@ -115,7 +115,43 @@ def _atomic_json(path, data):
     os.replace(temp, path)
 
 
+def cuda_dll_dirs(prefix=None):
+    """bin folders of NVIDIA runtime wheels installed in this environment.
+
+    ``pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`` puts cuBLAS / cuDNN
+    under site-packages/nvidia/*/bin, which Windows does not search.
+    """
+    root = Path(prefix or sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    return [p for p in sorted(root.glob("*/bin")) if p.is_dir()]
+
+
+def enable_cuda_dlls(prefix=None, environ=None):
+    """Let CTranslate2 find pip-installed CUDA DLLs, for this process only.
+
+    Never touches the system or user PATH: it adds DLL search directories
+    and prepends them to this process's PATH (inherited only by children).
+    Returns the directories added; empty when none are installed.
+    """
+    environ = os.environ if environ is None else environ
+    dirs = cuda_dll_dirs(prefix)
+    if not dirs or os.name != "nt":
+        return []
+    current = environ.get("PATH", "")
+    known = {p.lower() for p in current.split(os.pathsep) if p}
+    for directory in dirs:
+        try:
+            os.add_dll_directory(str(directory))
+        except (AttributeError, OSError):
+            pass
+    missing = [str(d) for d in dirs if str(d).lower() not in known]
+    if missing:
+        environ["PATH"] = os.pathsep.join(missing + ([current] if current else []))
+    return dirs
+
+
 def _load_model(model_size, device, compute_type):
+    if device != "cpu":
+        enable_cuda_dlls()
     from faster_whisper import WhisperModel
     print(f"Loading faster-whisper model={model_size} device={device} "
           f"compute={compute_type} (first run downloads the model)...", flush=True)

@@ -26,10 +26,14 @@ If the LLM is unavailable or returns unusable output, the shortlisted clips
 keep their rule scores (the previous behaviour) and steps 4-5 still apply.
 Degenerate output (every clip given the identical scores) counts as unusable.
 """
+import contextlib
 import hashlib
 import json
 import math
+import os
 import re
+import threading
+import time
 from pathlib import Path
 
 import llm as llm_mod
@@ -205,12 +209,102 @@ def load_cache(workdir):
     return {}
 
 
-def save_cache(workdir, entries):
+_CACHE_THREAD_LOCK = threading.Lock()
+CACHE_LOCK_TIMEOUT = 30.0   # seconds to wait for another writer
+CACHE_LOCK_STALE = 120.0    # a lock file this old was left by a crash
+
+
+@contextlib.contextmanager
+def _cache_lock(workdir):
+    """Exclusive access to the cache for threads *and* processes.
+
+    A lock file created with O_EXCL works across processes (Studio job,
+    CLI run) on Windows and POSIX; a thread lock covers this process.
+    """
+    path = Path(workdir) / (CACHE_FILE + ".lock")
+    deadline = time.monotonic() + CACHE_LOCK_TIMEOUT
+    with _CACHE_THREAD_LOCK:
+        while True:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - path.stat().st_mtime > CACHE_LOCK_STALE:
+                        path.unlink()
+                        continue
+                except OSError:
+                    continue
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"{path.name} is held by another process")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _write_cache(workdir, entries):
+    """Atomic replace: readers see the old file or the new one, never half."""
     path = Path(workdir) / CACHE_FILE
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps({"version": VERSION, "entries": entries},
-                               ensure_ascii=False), encoding="utf-8")
-    temp.replace(path)
+    temp = path.with_name(f"{CACHE_FILE}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump({"version": VERSION, "entries": entries}, handle,
+                      ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(20):
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError:
+                # Windows: a reader has the file open for a moment.
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def update_cache(workdir, add=None, remove=()):
+    """Merge judgments into the cache on disk; returns the merged entries.
+
+    Re-reads the file under the lock, so concurrent writers never lose each
+    other's entries. Only valid judgments are stored. Returns None (and the
+    caller keeps working without persistence) if the lock cannot be taken.
+    """
+    add = {key: entry for key, entry in (add or {}).items()
+           if validate_judgment(entry) is not None}
+    remove = [key for key in remove if key not in add]
+    if not add and not remove:
+        return load_cache(workdir)
+    try:
+        with _cache_lock(workdir):
+            entries = load_cache(workdir)
+            before = dict(entries)
+            entries.update(add)
+            for key in remove:
+                entries.pop(key, None)
+            if entries != before:
+                _write_cache(workdir, entries)
+            return entries
+    except (TimeoutError, OSError):
+        return None
+
+
+def save_cache(workdir, entries):
+    """Replace the whole cache (atomic, locked). Prefer update_cache."""
+    with _cache_lock(workdir):
+        _write_cache(workdir, entries)
 
 
 def validate_judgment(entry):
@@ -344,8 +438,7 @@ def judge_text(workdir, provider, item, text, words=None, language=""):
         judgment = _judge_clip(provider, item, text, context, language)
         if judgment is None:
             return None
-        cache[key] = judgment
-        save_cache(workdir, cache)
+        update_cache(workdir, {key: judgment})
     return llm_score(judgment)
 
 
@@ -473,35 +566,47 @@ def run(workdir, candidates, discovery, transcript, model=None, provider_name=No
         else:
             cache = load_cache(workdir)
             todo = []
+            used_keys = []     # cache keys behind this run's judgments
             for item in picked:
                 context = context_before(words, float(item["start"]))
                 key = _cache_key(provider.label, texts[_key(item)], context)
                 if key in cache and validate_judgment(cache[key]):
                     judgments[_key(item)] = cache[key]
+                    used_keys.append(key)
                     info["from_cache"] += 1
                 else:
                     todo.append((item, texts[_key(item)], context, key))
             log(f"AI judge {provider.label}: {len(picked)} shortlisted, "
                 f"{info['from_cache']} cached, {len(todo)} to judge")
             fresh = {}
+            persisted = True
             for number, (item, text, context, key) in enumerate(todo, 1):
                 judgment = _judge_clip(provider, item, text, context, language)
                 if judgment is not None:
                     fresh[key] = (item, judgment)
+                    used_keys.append(key)
+                    so_far = list(judgments.values()) + [j for _, j in fresh.values()]
+                    if degenerate(so_far):
+                        # Identical answers are a copied template, not
+                        # judgments: never leave them in the cache.
+                        update_cache(workdir, remove=used_keys)
+                    elif update_cache(workdir, {key: judgment}) is None:
+                        persisted = False
                 if number % PROGRESS_EVERY == 0 or number == len(todo):
                     log(f"AI judge: {number}/{len(todo)} clips")
+            if not persisted:
+                log("AI judge cache could not be written; results are used "
+                    "but will be judged again next run")
             everything = list(judgments.values()) + [j for _, j in fresh.values()]
             if degenerate(everything):
                 judgments = {}
                 fresh = {}
+                update_cache(workdir, remove=used_keys)
                 info.update(status="invalid", reason=(
                     "The model gave every clip identical scores; ignored."))
                 log("AI judge output was degenerate -> rule-based scores")
             for key, (item, judgment) in fresh.items():
                 judgments[_key(item)] = judgment
-                cache[key] = judgment
-            if fresh:
-                save_cache(workdir, cache)
             info["judged"] = len(judgments)
             if info["status"] == "invalid":
                 pass

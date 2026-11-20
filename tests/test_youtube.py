@@ -782,15 +782,73 @@ class FakeLLM:
         return self.reply
 
 
-def test_ai_writes_metadata_in_the_clip_language():
-    reply = {"title": "पापा के सामने prank उल्टा पड़ गया", "description": "पूरा पैसा वसूल।",
-             "hashtags": ["prank", "हिंदी"], "tags": ["prank", "comedy"]}
+def test_ai_hinglish_metadata_is_kept_as_written():
+    reply = {"title": "Papa ke saamne prank ulta pad gaya", "description": "Poora paisa vasool.",
+             "hashtags": ["prank", "papa"], "tags": ["prank", "comedy"]}
     llm = FakeLLM(reply)
     meta = publish_meta.generate({"hook": "papa", "text": "Bhai maine socha...",
                                   "language": "hi"}, llm)
-    assert meta["source"] == "ai" and meta["title"].startswith("पापा")
-    assert "हिंदी" in meta["hashtags"] and "Shorts" in meta["hashtags"]
-    assert "Detected language: hi" in llm.prompts[0]
+    assert meta["source"] == "ai" and meta["title"] == "Papa ke saamne prank ulta pad gaya"
+    assert "papa" in meta["hashtags"] and "Shorts" in meta["hashtags"]
+    assert "Detected language: hi" in llm.prompts[0] and len(llm.prompts) == 1
+    assert "note" not in meta and meta["policy"] == "hinglish-roman"
+
+
+def test_devanagari_from_the_model_is_retried_then_transliterated():
+    # Output policy: never Devanagari. Ask again; if the model insists,
+    # transliterate and tell the user to review.
+    reply = {"title": "पापा के सामने prank उल्टा पड़ गया", "description": "पूरा पैसा वसूल।",
+             "hashtags": ["prank", "हिंदी"], "tags": ["prank", "मज़ा"]}
+    llm = FakeLLM(reply)
+    meta = publish_meta.generate({"hook": "papa", "text": "Bhai maine socha...",
+                                  "language": "hi"}, llm)
+    assert len(llm.prompts) == 3 and "Devanagari" in llm.prompts[1]
+    assert not publish_meta.devanagari_fields(meta)
+    assert meta["title"] == "paapa ke saamne prank ulta pad gaya"
+    assert "transliterated" in meta["note"]
+    assert "maza" in meta["tags"]
+
+
+def test_model_retry_can_fix_devanagari():
+    good = {"title": "Papa ke saamne prank", "description": "Mast.",
+            "hashtags": ["prank"], "tags": ["prank"]}
+    replies = iter([{**good, "title": "पापा prank"}, good])
+
+    class Flaky(FakeLLM):
+        def chat_json(self, system, user, schema=None):
+            self.prompts.append(user)
+            return next(replies)
+    llm = Flaky()
+    meta = publish_meta.generate({"hook": "papa", "text": "x"}, llm)
+    assert meta["title"] == "Papa ke saamne prank" and "note" not in meta
+
+
+def test_the_model_only_ever_sees_roman_text():
+    llm = FakeLLM({"title": "ok", "description": "", "hashtags": [], "tags": []})
+    publish_meta.generate({"hook": "पहली बार", "text": "आज मैंने पहली बार GTA 6 खेला",
+                           "summary": "भाई", "source_title": "मेरा वीडियो",
+                           "language": "hi"}, llm)
+    assert not any("ऀ" <= ch <= "ॿ" for ch in llm.prompts[0])
+    assert "aaj maine pehli baar GTA 6 khela" in llm.prompts[0]
+
+
+def test_manual_devanagari_edits_are_rejected_with_a_suggestion():
+    with pytest.raises(ValueError) as exc:
+        publish_meta.clean({"title": "आज मैंने पहली बार GTA 6 खेला"})
+    assert "Roman" in str(exc.value) and "aaj maine pehli baar GTA 6 khela" in str(exc.value)
+    for field, value in (("description", "मज़ा"), ("tags", ["ok", "मज़ा"]),
+                         ("hashtags", ["भाई"])):
+        with pytest.raises(ValueError):
+            publish_meta.clean({"title": "fine", field: value})
+    assert publish_meta.clean({"title": "Bhai kya scene hai"})["title"] == "Bhai kya scene hai"
+
+
+def test_rule_fallback_metadata_is_roman():
+    meta = publish_meta.generate({"hook": "भाई ये गेम", "text": "भाई ये गेम में फिसिक्स बहुत क्रेजी हैं!"},
+                                 FakeLLM(ok=False))
+    assert meta["source"] == "rules" and meta["title"] == "Bhai ye game"
+    assert not publish_meta.devanagari_fields(meta)
+    assert "physics" in meta["tags"] and "hain" not in meta["tags"]
 
 
 def test_metadata_falls_back_when_ai_is_unavailable():

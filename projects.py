@@ -12,6 +12,7 @@ import download_and_transcribe as dt
 import boundaries
 import framing
 import highlights
+import hinglish
 import llm
 import render_clips
 import score_clips
@@ -39,7 +40,11 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "caption": None,
                    # Phase 4: how vertical/square output is framed.
-                   "framing": "auto"}
+                   "framing": "auto",
+                   # Output policy: generated text is Roman-script Hinglish.
+                   # True also asks the LLM to polish transliterated spelling
+                   # (validated word by word; rules alone are the default).
+                   "hinglish_ai": False}
 
 
 def digest(value):
@@ -135,6 +140,10 @@ def validate_options(options):
         result["framing"] = DEFAULT_OPTIONS["framing"]
     if result["framing"] not in framing.MODES:
         raise ValueError("framing must be auto, track, center or fit.")
+    if result["hinglish_ai"] is None:
+        result["hinglish_ai"] = False
+    if not isinstance(result["hinglish_ai"], bool):
+        raise ValueError("hinglish_ai must be true or false.")
     if result["duration_mode"] is None:
         result["duration_mode"] = DEFAULT_OPTIONS["duration_mode"]
     if result["duration_mode"] not in boundaries.MODES:
@@ -148,6 +157,81 @@ def score_options(options):
     keys = ("llm", "search", "semantic", "embed_model", "min_score",
             "max_clips", "min_len", "max_len", "preferred_len")
     return {key: options[key] for key in keys}
+
+
+def text_converter(path, options, log=None):
+    """The project's Hinglish converter (rules; plus AI spelling if enabled)."""
+    provider = None
+    if options.get("hinglish_ai") and options.get("llm"):
+        try:
+            provider = llm.get_provider(options.get("llm_provider") or "ollama",
+                                            options["llm"])
+        except ValueError:
+            provider = None
+    return hinglish.Converter(path, provider, log or (lambda m: print(m, flush=True)))
+
+
+def apply_text_policy(path, options=None, converter=None):
+    """Rewrite generated text in segments.json as Roman Hinglish.
+
+    Hooks (clip titles and file names) and AI judge text are converted; the
+    original hook is kept in ``hook_original``. Idempotent and cheap, so it
+    also upgrades projects selected before the policy existed, without
+    re-running discovery or judging. Returns the number of changed fields.
+    """
+    path = Path(path)
+    segments_path = path / "segments.json"
+    if not segments_path.is_file():
+        return 0
+    segments = read_json(segments_path)
+    converter = converter or text_converter(path, options or {})
+    changed = 0
+    for segment in segments:
+        if hinglish.has_devanagari(segment.get("hook")):
+            segment.setdefault("hook_original", segment["hook"])
+            segment["hook"] = converter.text(segment["hook"])
+            changed += 1
+        judge = segment.get("judge")
+        if isinstance(judge, dict):
+            for field in ("summary", "reason"):
+                if hinglish.has_devanagari(judge.get(field)):
+                    judge[field] = converter.text(judge[field])
+                    changed += 1
+        if hinglish.has_devanagari(segment.get("reason")):
+            segment["reason"] = converter.text(segment["reason"])
+            changed += 1
+    if changed:
+        atomic_json(segments_path, segments)
+    # Exported clips' metadata files (titles, descriptions, hashtags) are
+    # text only, so they are upgraded in place. Burned-in captions and SRT
+    # are not: they must match the video, so "Export again" redoes both.
+    for meta_path in sorted((path / "clips").glob("*.meta.json")):
+        try:
+            meta = read_json(meta_path)
+        except (OSError, ValueError):
+            continue
+        fields = [k for k in ("title", "description") if hinglish.has_devanagari(meta.get(k))]
+        tags = meta.get("hashtags") or []
+        if fields or any(hinglish.has_devanagari(t) for t in tags):
+            for key in fields:
+                meta.setdefault(f"{key}_original", meta[key])
+                meta[key] = converter.text(meta[key])
+            meta["hashtags"] = [t for t in (hinglish.romanize(t) for t in tags) if t.strip("#")]
+            atomic_json(meta_path, meta)
+            changed += 1
+    return changed
+
+
+def legacy_caption_clips(path):
+    """Exported clips whose captions predate the Roman Hinglish policy."""
+    clips = []
+    for srt in sorted((Path(path) / "clips").glob("*.srt")):
+        try:
+            if hinglish.has_devanagari(srt.read_text(encoding="utf-8")):
+                clips.append(srt.with_suffix(".mp4").name)
+        except OSError:
+            continue
+    return clips
 
 
 def score_keys(transcript_key, data, options):
@@ -470,6 +554,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     save_project(path, state)
 
             state["selection"] = read_json(selection_path)
+            apply_text_policy(path, options)
         if action == "prepare":
             state.update(status="review", stage="ready for review")
         else:
@@ -493,6 +578,12 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
             # Assign stable IDs before subset selection so names do not shift.
             segments = [{**s, "id": f"{i:03}"} for i, s in enumerate(segments, 1)]
             segments = score_clips.pick_segments(segments, pick)
+            # Captions and SRT use the Roman Hinglish display transcript;
+            # transcript.json keeps Whisper's original words.
+            caption_words = hinglish.display_words(
+                path, data, ranges=[(float(s["start"]) - 2.0, float(s["end"]) + 2.0)
+                                    for s in segments],
+                converter=text_converter(path, options))
             out = path / ("previews" if preview else "clips")
             out.mkdir(exist_ok=True)
             brand = branding.load_brand(options["brand"]) if options["brand"] else None
@@ -535,7 +626,8 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                         sections.SECTION_VERSION])
                 key = digest([segment, data["words"], file_identity(source),
                               options, brand, logo_identity, preview,
-                              source_offset, section_key])
+                              source_offset, section_key,
+                              hinglish.POLICY_VERSION])
                 cached = state["renders"].get(key)
                 expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
                 if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
@@ -571,7 +663,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                                 segment, data["words"],
                                 file_identity(source), options, brand,
                                 logo_identity, preview, source_offset,
-                                section_key])
+                                section_key, hinglish.POLICY_VERSION])
                         except (Exception, SystemExit) as exc:
                             failed_sections[group_index] = str(exc)
                             render_errors.append(
@@ -581,7 +673,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     else:
                         render_source, W, H = loaded
                 try:
-                    output = render_clips.render({**segment, "id": segment["id"] + "-" + key[:8]}, data["words"], render_source, W, H, path,
+                    output = render_clips.render({**segment, "id": segment["id"] + "-" + key[:8]}, caption_words, render_source, W, H, path,
                         options["aspect"], out_dir=out, style=options["style"],
                         do_tighten=options["tighten"], loudnorm=options["loudnorm"], preview=preview,
                         brand=brand, layout=options["layout"], centers=options["centers"],

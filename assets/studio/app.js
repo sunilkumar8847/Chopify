@@ -385,6 +385,9 @@ async function selectProject(id) {
   state.previewFile = null;
   state.pendingPreview = null;
   $("#new-view").hidden = true;
+  $("#dashboard-view").hidden = true;
+  state.view = "project";
+  if (location.hash) history.replaceState(null, "", location.pathname);
   $("#project-view").hidden = false;
   const detail = await api(`/api/projects/${id}`);
   if (state.id !== id) return;
@@ -734,6 +737,7 @@ function renderWords() {
 function renderOutputs(detail) {
   const videos = detail.files.filter((f) => f.name.endsWith(".mp4"));
   $("#output-count").textContent = `${videos.length} CLIPS`;
+  $("#legacy-captions").hidden = !(detail.legacy_captions || []).length;
   $("#outputs").className = videos.length ? "output-grid" : "";
   $("#outputs").innerHTML = videos.length
     ? videos
@@ -785,8 +789,11 @@ async function run(action, preview = false) {
 }
 $("#new-project").addEventListener("click", () => {
   state.id = null;
+  state.view = "new";
+  if (location.hash) history.replaceState(null, "", location.pathname);
   $("#new-view").hidden = false;
   $("#project-view").hidden = true;
+  $("#dashboard-view").hidden = true;
   $("#sources").focus();
   refreshProjects().catch((e) => notice(e.message, true));
 });
@@ -815,9 +822,16 @@ $("#create-form").addEventListener(
         style: $("#new-style").value,
       };
       const result = await api("/api/batch", { sources, options });
-      await selectProject(result.projects[0].id);
+      const skipped = result.duplicates || [];
+      if (result.projects.length) await selectProject(result.projects[0].id);
+      else if (skipped[0]?.project_id) await selectProject(skipped[0].project_id);
+      const made = result.projects.length;
       notice(
-        `${sources.length} project${sources.length === 1 ? "" : "s"} queued for review.`,
+        `${made} project${made === 1 ? "" : "s"} queued for review.` +
+          (skipped.length
+            ? ` ${skipped.length} source${skipped.length === 1 ? " was" : "s were"} skipped: already in a project (no duplicate processing).`
+            : ""),
+        !made,
       );
       $("#sources").value = "";
     } finally {
@@ -910,6 +924,7 @@ $("#settings-form").addEventListener(
     values.tighten = form.elements.tighten.checked;
     values.loudnorm = form.elements.loudnorm.checked;
     values.highlights = form.elements.highlights.checked;
+    values.hinglish_ai = form.elements.hinglish_ai.checked;
     values.centers = [Number(values.center1), Number(values.center2)];
     delete values.center1;
     delete values.center2;
@@ -1227,6 +1242,7 @@ setInterval(async () => {
 safe(async () => {
   await config();
   await refreshProjects();
+  if (location.hash === "#dashboard") await showDashboard();
 })();
 
 /* ------------------------------------------------------------------ YouTube
@@ -1500,3 +1516,252 @@ $("#yt-settings-form").addEventListener(
     await loadYouTube();
   }),
 );
+
+// ------------------------------------------------------------------
+// Phase 6: automation dashboard (overview of every project and queue).
+// ------------------------------------------------------------------
+const STAGES = ["source", "transcribe", "discover", "select", "render", "upload"];
+const STAGE_WORDS = {
+  done: "done",
+  active: "running",
+  failed: "failed",
+  pending: "not yet",
+};
+function relTime(seconds) {
+  if (!seconds) return "";
+  const delta = Date.now() / 1000 - seconds;
+  if (delta < 60) return "just now";
+  if (delta < 3600) return `${Math.round(delta / 60)} min ago`;
+  if (delta < 86400) return `${Math.round(delta / 3600)} h ago`;
+  return new Date(seconds * 1000).toLocaleDateString();
+}
+function dashCard(label, value, detail, tone = "") {
+  return `<div class="dash-card ${tone}"><span>${escapeHTML(label)}</span><strong>${escapeHTML(String(value))}</strong><small>${escapeHTML(detail || "")}</small></div>`;
+}
+function renderOverview(data) {
+  state.overview = data;
+  const rows = data.projects;
+  const failed = rows.filter((p) => ["failed", "interrupted"].includes(p.status));
+  const running = data.jobs.active.filter((j) => j.state === "running");
+  const queued = data.jobs.active.filter((j) => j.state === "queued");
+  const up = data.uploads.counts || {};
+  const usage = data.uploads.usage || {};
+  $("#dash-cards").innerHTML = [
+    dashCard("Running", running.length, running.map((j) => j.kind).join(", ") || "idle", running.length ? "live" : ""),
+    dashCard("Queued", queued.length, data.jobs.paused.process ? "processing paused" : "waiting their turn", data.jobs.paused.process ? "warn" : ""),
+    dashCard("Needs attention", failed.length, failed.length ? "see the red stages below" : "nothing failed", failed.length ? "bad" : ""),
+    dashCard("Uploaded", up.uploaded || 0, `${up.queued || 0} approved · ${up.draft || 0} drafts`),
+    dashCard("Uploads left today", usage.uploads_left_today ?? "–", data.jobs.paused.uploads ? "uploads paused" : `resets ${usage.resets_at ? formatReset(usage.resets_at) : ""}`, data.jobs.paused.uploads ? "warn" : ""),
+    dashCard("New sources today", `${data.usage.new_sources}/${data.usage.limit}`, "from channel monitoring"),
+  ].join("");
+  $("#dash-project-count").textContent = `${rows.length} PROJECT${rows.length === 1 ? "" : "S"}`;
+  $("#dash-rows").innerHTML = rows.length
+    ? rows.map(dashRow).join("")
+    : `<tr><td colspan="9" class="muted">No projects yet. Add sources under New project or monitor a channel.</td></tr>`;
+  const pausedP = data.jobs.paused.process;
+  const pausedU = data.jobs.paused.uploads;
+  const pp = $("#dash-pause-processing");
+  pp.textContent = pausedP ? "▶ Resume processing" : "❚❚ Pause processing";
+  pp.setAttribute("aria-pressed", String(pausedP));
+  pp.classList.toggle("primary", pausedP);
+  const pu = $("#dash-pause-uploads");
+  pu.textContent = pausedU ? "▶ Resume uploads" : "❚❚ Pause uploads";
+  pu.setAttribute("aria-pressed", String(pausedU));
+  pu.classList.toggle("primary", pausedU);
+  // uploads
+  const active = data.uploads.active || [];
+  $("#dash-upload-summary").textContent = `${active.length} IN QUEUE`;
+  $("#dash-uploads").innerHTML = active.length
+    ? active
+        .map(
+          (u) =>
+            `<li><span class="upload-chip upload-${escapeHTML(u.state)}">${escapeHTML(UPLOAD_LABELS[u.state] || u.state)}${u.state === "uploading" ? ` ${Math.round((u.progress || 0) * 100)}%` : ""}</span> <span>${escapeHTML(u.metadata?.title || u.name)}</span>${u.error ? `<small class="dash-error">${escapeHTML(u.error)}</small>` : ""}<button type="button" class="link" data-dash-open="${escapeHTML(u.project_id)}">Open</button></li>`,
+        )
+        .join("")
+    : `<li class="muted">No approved uploads waiting.</li>`;
+  // jobs
+  const jobs = [...data.jobs.active, ...data.jobs.recent].slice(0, 12);
+  $("#dash-job-summary").textContent = `${data.jobs.active.length} ACTIVE`;
+  $("#dash-jobs").innerHTML = jobs.length
+    ? jobs
+        .map(
+          (j) =>
+            `<li><span class="job-state job-${escapeHTML(j.state)}">${escapeHTML(j.waiting ? "paused" : j.state)}</span> <span>${escapeHTML(j.kind)} · ${escapeHTML(j.project_id)}</span><small class="muted">${escapeHTML(relTime(j.finished || j.started || j.created))}</small>${j.error ? `<small class="dash-error">${escapeHTML(j.error)}</small>` : ""}</li>`,
+        )
+        .join("")
+    : `<li class="muted">No jobs since Studio started.</li>`;
+  // monitoring + settings
+  const s = data.settings;
+  $("#dash-monitor-state").textContent = s.monitor_enabled
+    ? data.monitor_next
+      ? `ON · NEXT ${new Date(data.monitor_next * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      : "ON"
+    : "OFF";
+  $("#dash-channels").innerHTML = data.channels.length
+    ? data.channels
+        .map(
+          (c) =>
+            `<li><span>${escapeHTML(c.label || c.url)}</span><small class="muted">${escapeHTML(c.last_check ? `checked ${relTime(c.last_check)} · ${c.found || 0} found` : "not checked yet")}</small>${c.last_error ? `<small class="dash-error">${escapeHTML(c.last_error)}</small>` : ""}<button type="button" class="link" data-remove-channel="${escapeHTML(c.id)}">Remove</button></li>`,
+        )
+        .join("")
+    : `<li class="muted">No channels monitored.</li>`;
+  $("#dash-usage").textContent = `${data.usage.left} NEW SOURCES LEFT TODAY`;
+  const form = $("#dash-settings-form");
+  if (!form.contains(document.activeElement)) {
+    for (const input of form.elements) {
+      if (!input.name) continue;
+      const value = input.name === "aspect" ? s.new_project_options?.aspect || "9:16" : s[input.name];
+      if (input.type === "checkbox") input.checked = !!value;
+      else if (value !== undefined) input.value = value;
+    }
+  }
+  // events
+  $("#dash-events").innerHTML = data.events.length
+    ? data.events
+        .map(
+          (e) =>
+            `<li class="event-${escapeHTML(e.level)}"><time>${escapeHTML(new Date(e.time * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }))}</time><span>${escapeHTML(e.message)}${e.advice ? ` <em>${escapeHTML(e.advice)}</em>` : ""}</span>${e.project_id ? `<button type="button" class="link" data-dash-open="${escapeHTML(e.project_id)}">${escapeHTML(e.project_id)}</button>` : ""}</li>`,
+        )
+        .join("")
+    : `<li class="muted">Nothing has happened yet.</li>`;
+  updateDashBadge(data);
+}
+function dashRow(p) {
+  const stages = STAGES.map((stage) => {
+    const status = p.pipeline[stage];
+    let extra = "";
+    if (p.progress && p.progress.stage === stage && status === "active")
+      extra = `<progress class="mini-bar" max="100" value="${Math.round(p.progress.fraction * 100)}" title="${escapeHTML(p.progress.detail || "")}">${Math.round(p.progress.fraction * 100)}%</progress>`;
+    if (stage === "render" && p.clips)
+      extra = `<small>${p.clips}${p.legacy_captions ? ` · ${p.legacy_captions} need re-export for Hinglish captions` : ""}</small>`;
+    return `<td><i class="stage-dot ${status}" title="${stage}: ${STAGE_WORDS[status] || status}"></i><span class="sr-only">${stage}: ${STAGE_WORDS[status] || status}</span>${extra}</td>`;
+  }).join("");
+  const canRetry = ["failed", "interrupted", "cancelled"].includes(p.status);
+  const diagnosis = p.diagnosis
+    ? `<div class="dash-diagnosis"><strong>Failed at ${escapeHTML(p.diagnosis.stage)}:</strong> ${escapeHTML(p.diagnosis.problem)} <span>${escapeHTML(p.diagnosis.advice)}</span></div>`
+    : "";
+  return `<tr class="${canRetry ? "row-bad" : ""}"><th scope="row"><button type="button" class="link dash-name" data-dash-open="${escapeHTML(p.id)}">${escapeHTML(p.title || p.source || p.id)}</button><small class="muted">${escapeHTML(p.id)} · ${escapeHTML(relTime(p.updated))}</small>${diagnosis}</th>${stages}<td><span class="status-chip status-${escapeHTML(p.status)}">${escapeHTML(p.status)}</span><small class="muted">${escapeHTML(p.stage || "")}</small></td><td class="dash-actions">${canRetry ? `<button type="button" data-dash-retry="${escapeHTML(p.id)}">Retry</button>` : ""}${p.busy ? `<button type="button" data-dash-cancel="${escapeHTML(p.id)}">Cancel</button>` : ""}</td></tr>`;
+}
+function updateDashBadge(data) {
+  const bad = data.projects.filter((p) => ["failed", "interrupted"].includes(p.status)).length;
+  const badge = $("#dash-badge");
+  badge.hidden = !bad;
+  badge.textContent = bad ? String(bad) : "";
+}
+async function loadOverview() {
+  renderOverview(await api("/api/overview"));
+}
+async function showDashboard() {
+  if (location.hash !== "#dashboard") history.replaceState(null, "", "#dashboard");
+  state.view = "dashboard";
+  state.id = null;
+  $("#new-view").hidden = true;
+  $("#project-view").hidden = true;
+  $("#dashboard-view").hidden = false;
+  await loadOverview();
+  await refreshProjects();
+}
+$("#open-dashboard").addEventListener("click", safe(showDashboard));
+$("#dash-refresh").addEventListener("click", safe(loadOverview));
+$("#dash-pause-processing").addEventListener(
+  "click",
+  safe(async () => {
+    const paused = !state.overview?.jobs.paused.process;
+    await api("/api/automation/pause", { target: "processing", paused });
+    notice(paused ? "Processing paused. The running job finishes; nothing new starts." : "Processing resumed.");
+    await loadOverview();
+  }),
+);
+$("#dash-pause-uploads").addEventListener(
+  "click",
+  safe(async () => {
+    const paused = !state.overview?.jobs.paused.uploads;
+    await api("/api/automation/pause", { target: "uploads", paused });
+    notice(paused ? "Uploads paused. An upload in progress finishes; approved clips wait." : "Uploads resumed.");
+    await loadOverview();
+  }),
+);
+$("#dashboard-view").addEventListener(
+  "click",
+  safe(async (event) => {
+    const open = event.target.closest("[data-dash-open]");
+    if (open) return selectProject(open.dataset.dashOpen);
+    const retry = event.target.closest("[data-dash-retry]");
+    if (retry) {
+      await api(`/api/projects/${retry.dataset.dashRetry}/retry`, {});
+      notice("Queued again. Finished stages are reused.");
+      return loadOverview();
+    }
+    const cancel = event.target.closest("[data-dash-cancel]");
+    if (cancel) {
+      if (!confirm("Cancel this project's job? A recording is stopped and kept.")) return;
+      await api(`/api/projects/${cancel.dataset.dashCancel}/cancel`, {});
+      notice("Cancelling…");
+      return loadOverview();
+    }
+    const remove = event.target.closest("[data-remove-channel]");
+    if (remove) {
+      if (!confirm("Stop monitoring this channel?")) return;
+      await api(`/api/automation/channels/${remove.dataset.removeChannel}/remove`, {});
+      return loadOverview();
+    }
+  }),
+);
+$("#dash-channel-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    await api("/api/automation/channels", {
+      url: $("#dash-channel-url").value.trim(),
+      label: $("#dash-channel-label").value.trim(),
+    });
+    $("#dash-channel-url").value = "";
+    $("#dash-channel-label").value = "";
+    notice("Channel added. Its existing videos are skipped; new ones become projects.");
+    await loadOverview();
+  }),
+);
+$("#dash-check-now").addEventListener(
+  "click",
+  safe(async () => {
+    await api("/api/automation/check", {});
+    notice("Checking channels in the background…");
+    setTimeout(() => loadOverview().catch(() => {}), 4000);
+  }),
+);
+$("#dash-settings-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const current = state.overview?.settings || {};
+    const settings = {
+      monitor_enabled: form.elements.monitor_enabled.checked,
+      record_live: form.elements.record_live.checked,
+      resume_after_restart: form.elements.resume_after_restart.checked,
+      monitor_interval_minutes: Number(form.elements.monitor_interval_minutes.value),
+      max_new_sources_per_day: Number(form.elements.max_new_sources_per_day.value),
+      new_source_action: form.elements.new_source_action.value,
+      new_project_options: { ...(current.new_project_options || {}), aspect: form.elements.aspect.value },
+    };
+    await api("/api/automation/settings", { settings });
+    notice("Automation settings saved.");
+    await loadOverview();
+  }),
+);
+let dashPolling = false;
+setInterval(async () => {
+  if (dashPolling) return;
+  dashPolling = true;
+  try {
+    if (state.view === "dashboard") await loadOverview();
+    else if (!state.overview || Date.now() - (state.overviewAt || 0) > 15000) {
+      state.overviewAt = Date.now();
+      updateDashBadge(await api("/api/overview"));
+    }
+  } catch (error) {
+    /* shown by the main poller */
+  } finally {
+    dashPolling = false;
+  }
+}, 3000);

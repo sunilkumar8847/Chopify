@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 6 automation dashboard (`#dashboard`): per-project stage pipeline with
+  progress, job and upload queues, pause/resume of processing and uploads,
+  retry and cancel, failure diagnosis with recovery advice, activity log.
+- Duplicate-source prevention for batch and monitoring (YouTube video ID or
+  resolved file path).
+- Optional YouTube channel monitoring: new videos become projects, live
+  streams are recorded; daily limit; never publishes.
+- Restart recovery: interrupted processing jobs are queued again (setting).
+- Output-language policy: captions, SRT, hooks, file names and YouTube
+  metadata are Roman-script Hinglish/English, never Devanagari
+  (`hinglish.py`, `transcript.display.json`).
+- GPU transcription finds pip-installed CUDA DLLs in the virtual environment.
+- AI judgments are saved one by one (atomic, locked), so a stopped run
+  continues where it stopped.
+
+### Changed
+- `job.log` is appended per run (rotated at 2 MB) instead of overwritten.
+- Studio ignores browser disconnects (WinError 10053) instead of printing
+  tracebacks.
+
 - `python chopify.py --version` prints the release version and exits 0 without
   requiring a source, ffmpeg or network.
 - `python chopify.py --list-styles` prints the 13 caption preset names and

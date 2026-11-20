@@ -128,7 +128,14 @@ require a matching Origin. Never publish a running session's token.
 | --- | --- | --- |
 | GET | `/api/projects` | `{ "projects": [project, ...] }` |
 | POST | `/api/projects` | `{ "source": "C:/video.mp4", "options": {} }`; creates without starting |
-| POST | `/api/batch` | `{ "sources": ["C:/video.mp4"], "options": {} }`; creates and queues preparation, up to 100 sources |
+| POST | `/api/batch` | `{ "sources": ["C:/video.mp4"], "options": {}, "allow_duplicates": false }`; creates and queues preparation, up to 100 sources; returns `{ "projects": [...], "duplicates": [{ "source", "project_id" }] }` (a video that already has a project is skipped) |
+| GET | `/api/overview` | Dashboard payload: `projects` (with `pipeline` per stage, `progress`, `diagnosis`), `jobs`, `uploads`, `settings`, `usage`, `channels`, `events` |
+| POST | `/api/projects/ID/retry` | Repeats the last action of a failed, interrupted or cancelled project |
+| POST | `/api/projects/ID/cancel` | Cancels the project's running or queued job |
+| POST | `/api/automation/pause` | `{ "target": "processing" \| "uploads", "paused": true }` |
+| POST | `/api/automation/settings` | `{ "settings": { "monitor_enabled": true, "max_new_sources_per_day": 5, ... } }` |
+| POST | `/api/automation/channels` | `{ "url": "https://www.youtube.com/@name", "label": "" }`; `/api/automation/channels/ID/remove` stops monitoring |
+| POST | `/api/automation/check` | Runs one channel-monitoring pass in the background |
 | GET | `/api/projects/ID` | `{ "project": ..., "busy": false, "candidates": [], "transcript": ..., "selection": {}, "source_meta": {}, "progress": {}, "render_errors": [], "playable_source": true, "files": [], "log": "..." }` |
 | POST | `/api/projects/ID/settings` | Partial settings, e.g. `{ "aspect": "9:16", "layout": "split", "style": "bold", "caption": { "words_per_cue": 2 } }`; `brand_name` selects a preset |
 | POST | `/api/projects/ID/transcript` | `{ "words": [{ "word": "Hello", "start": 0, "end": 0.5 }] }` |

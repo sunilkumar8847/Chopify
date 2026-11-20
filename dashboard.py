@@ -3,6 +3,7 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 import secrets
@@ -13,6 +14,7 @@ import time
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
+import automation
 import branding
 import ingest
 import jobs
@@ -64,6 +66,8 @@ def project_detail(root, project_id):
                            and (recording or {}).get("state") != "recorded"),
         "source_meta": source_meta,
         "progress": state.get("progress") or {},
+        "diagnosis": automation.diagnose(state, data["log"][-4000:]),
+        "legacy_captions": projects.legacy_caption_clips(path),
         "render_errors": state.get("render_errors") or [],
         "playable_source": bool(
             not render_from_sections and video
@@ -136,10 +140,21 @@ class Studio:
         self.youtube = youtube_auth.YouTubeAccount()
         self.uploads = youtube_upload.UploadQueue(self.youtube)
         self.upload_timer = None
+        # Phase 6: automation settings, event history, channel monitoring.
+        self.settings = automation.Settings(self.root)
+        self.events = automation.EventLog(self.root)
+        self.monitor = automation.Monitor(self.settings)
+        self.monitor_timer = None
+        self.monitor_busy = threading.Lock()
+        self.recover = []          # processing jobs interrupted by a restart
+        if self.settings.get()["processing_paused"]:
+            self.jobs.pause("process")
         for path in self.root.glob("*/project.json"):
             try:
                 state = projects.read_project(path.parent)
                 changed = live.mark_interrupted(state)
+                if state["status"] in {"queued", "running"} and state.get("last_action"):
+                    self.recover.append(path.parent.name)
                 if state["status"] in {"queued", "running", "recording"}:
                     state.update(status="interrupted", error="Studio stopped. Resume this project to continue.")
                     changed = True
@@ -151,6 +166,212 @@ class Studio:
     def busy(self, project_id):
         return self.jobs.busy(project_id)
 
+    # ------------------------------------------------------- automation
+    def start_automation(self):
+        """After startup: resume interrupted work and arm the monitor."""
+        settings = self.settings.get()
+        if self.recover:
+            for project_id in list(self.recover):
+                if not settings["resume_after_restart"]:
+                    self.events.add("recovery", "Studio restarted; press Retry to "
+                                    "continue this project.", project_id)
+                    continue
+                try:
+                    state = projects.read_project(projects.project_path(self.root, project_id))
+                    self.enqueue(project_id, state.get("last_action") or "prepare",
+                                 bool(state.get("last_preview")), state.get("last_pick"),
+                                 reason="resumed after restart")
+                except (ValueError, OSError, KeyError) as exc:
+                    self.events.add("recovery", f"Could not resume: {exc}",
+                                    project_id, level="error")
+            self.recover = []
+        self._schedule_monitor()
+
+    def find_duplicate(self, source):
+        """The existing project for this video, or None."""
+        key = automation.source_key(source)
+        for state in self.list_projects():
+            if state.get("status") == "cancelled" and not state.get("cache"):
+                continue
+            if key in automation.project_source_keys(state):
+                return state
+        return None
+
+    def create_sources(self, sources, options, allow_duplicates=False, origin="manual"):
+        """Create and queue projects; the same video is never added twice."""
+        created, duplicates = [], []
+        seen = set()
+        for source in sources:
+            key = automation.source_key(source)
+            existing = None if allow_duplicates else self.find_duplicate(source)
+            if existing is not None or key in seen:
+                duplicates.append({"source": source,
+                                   "project_id": existing["id"] if existing else None})
+                continue
+            seen.add(key)
+            state = projects.create_project(self.root, source, options)
+            self.events.add("created", f"New project from {origin}: {source}", state["id"])
+            self.enqueue(state["id"], "prepare")
+            created.append(state)
+        if duplicates:
+            self.events.add("duplicate", f"Skipped {len(duplicates)} source(s) "
+                            "that already have a project.", level="warning")
+        return created, duplicates
+
+    def set_paused(self, target, paused):
+        if target not in ("processing", "uploads"):
+            raise ValueError("Pause target must be processing or uploads.")
+        key = f"{target}_paused"
+        self.settings.update({key: bool(paused)})
+        if target == "processing":
+            (self.jobs.pause if paused else self.jobs.resume)("process")
+        else:
+            if not paused:
+                self.kick_uploads()
+        self.events.add("pause", f"{target.capitalize()} {'paused' if paused else 'resumed'}.")
+        return self.settings.get()
+
+    def retry(self, project_id):
+        state = projects.read_project(projects.project_path(self.root, project_id))
+        if state.get("status") not in ("failed", "interrupted", "cancelled"):
+            raise ValueError("Only failed, interrupted or cancelled projects can be retried.")
+        rec = state.get("recording")
+        if isinstance(rec, dict) and rec.get("state") not in (None, "recorded"):
+            raise ValueError("This recording is not finalized. Use Resume recording "
+                             "or Finalize recording in the project.")
+        self.enqueue(project_id, state.get("last_action") or "prepare",
+                     bool(state.get("last_preview")), state.get("last_pick"),
+                     reason="retry")
+        return {"ok": True}
+
+    def overview(self):
+        """Everything the automation dashboard shows, in one payload."""
+        uploads = self.uploads.entries()
+        by_project = {}
+        for entry in uploads:
+            by_project.setdefault(entry["project_id"], []).append(entry)
+        rows = []
+        for state in self.list_projects():
+            path = projects.project_path(self.root, state["id"])
+            log_tail = ""
+            if state.get("status") in ("failed", "interrupted", "cancelled"):
+                try:
+                    with (path / "job.log").open("rb") as handle:
+                        handle.seek(max(0, (path / "job.log").stat().st_size - 4000))
+                        log_tail = handle.read().decode("utf-8", errors="replace")
+                except OSError:
+                    pass
+            project_uploads = by_project.get(state["id"], [])
+            meta = state.get("source_meta") or {}
+            rows.append({
+                "id": state["id"], "source": state.get("source"),
+                "title": meta.get("title") or Path(str(state.get("source") or "")).name,
+                "status": state.get("status"), "stage": state.get("stage"),
+                "error": state.get("error"), "created": state.get("created"),
+                "updated": state.get("updated"), "busy": self.busy(state["id"]),
+                "pipeline": automation.pipeline(path, state, project_uploads),
+                "progress": automation.progress(state),
+                "diagnosis": automation.diagnose(state, log_tail),
+                "clips": len(list((path / "clips").glob("*.mp4"))) if (path / "clips").is_dir() else 0,
+                "legacy_captions": len(projects.legacy_caption_clips(path)),
+                "uploads": {s: sum(1 for u in project_uploads if u["state"] == s)
+                            for s in {u["state"] for u in project_uploads}},
+                "recording": (state.get("recording") or {}).get("state"),
+            })
+        jobs = self.jobs.list()
+        active = [j for j in jobs if j["state"] in ("queued", "running")]
+        recent = [j for j in jobs if j["state"] not in ("queued", "running")][-15:]
+        upload_counts = {}
+        for entry in uploads:
+            upload_counts[entry["state"]] = upload_counts.get(entry["state"], 0) + 1
+        settings = self.settings.get()
+        return {
+            "projects": rows,
+            "jobs": {"active": active, "recent": list(reversed(recent)),
+                     "paused": {"process": self.jobs.paused("process"),
+                                "uploads": settings["uploads_paused"]}},
+            "uploads": {"counts": upload_counts,
+                        "active": [public_upload(e) for e in uploads
+                                   if e["state"] in ("uploading", "queued", "quota_wait", "failed")],
+                        "usage": self.uploads.usage()},
+            "settings": settings,
+            "usage": self.settings.usage(),
+            "channels": [{k: c.get(k) for k in ("id", "url", "label", "added", "baseline",
+                                                 "last_check", "last_error", "found")}
+                         for c in self.settings.channels()],
+            "monitor_next": getattr(self, "monitor_next", None),
+            "events": self.events.tail(60),
+        }
+
+    # ------------------------------------------------------ monitoring
+    def _schedule_monitor(self):
+        with self.lock:
+            if self.monitor_timer is not None:
+                self.monitor_timer.cancel()
+                self.monitor_timer = None
+            settings = self.settings.get()
+            self.monitor_next = None
+            if self.closing or not settings["monitor_enabled"] or not self.settings.channels():
+                return
+            delay = settings["monitor_interval_minutes"] * 60
+            self.monitor_next = time.time() + delay
+            self.monitor_timer = threading.Timer(delay, self._monitor_tick)
+            self.monitor_timer.daemon = True
+            self.monitor_timer.start()
+
+    def _monitor_tick(self):
+        try:
+            self.check_channels()
+        finally:
+            self._schedule_monitor()
+
+    def check_channels(self):
+        """One monitoring pass. New videos become processing jobs and live
+        streams become recordings, within the daily limit. Nothing is ever
+        published: uploads still need the user's approval clip by clip."""
+        if not self.monitor_busy.acquire(blocking=False):
+            return {"busy": True}
+        try:
+            settings = self.settings.get()
+
+            def handle(kind, entry, channel):
+                if self.find_duplicate(entry["url"]) is not None:
+                    return True
+                if kind == "upcoming":
+                    return False                 # look again when it is live
+                if kind == "live" and not settings["record_live"]:
+                    return True
+                if not self.settings.take_source_slot():
+                    self.events.add("limit", "Daily limit for new sources reached; "
+                                    f"{entry['url']} waits for tomorrow.", level="warning")
+                    return False
+                options = projects.validate_options(dict(settings["new_project_options"]))
+                label = channel.get("label") or channel["url"]
+                if kind == "live":
+                    after = settings["new_source_action"]
+                    state = live.start_recording_project(
+                        self.root, entry["url"], {"after": after}, options)
+                    self.start_recording(state["id"])
+                    self.events.add("monitor", f"{label}: recording live stream "
+                                    f"\"{entry.get('title') or entry['url']}\"", state["id"])
+                    return True
+                state = projects.create_project(self.root, entry["url"], options)
+                self.events.add("monitor", f"{label}: new video "
+                                f"\"{entry.get('title') or entry['url']}\"", state["id"])
+                if settings["new_source_action"] != "none":
+                    self.enqueue(state["id"], settings["new_source_action"],
+                                 reason="channel monitor")
+                return True
+
+            results = self.monitor.check(handle)
+            for result in results:
+                if result.get("error"):
+                    self.events.add("monitor", f"Channel check failed: {result['error']}",
+                                    level="error")
+            return {"results": results}
+        finally:
+            self.monitor_busy.release()
+
     # ---------------------------------------------------------- YouTube
     UPLOAD_JOB = "youtube-uploads"
 
@@ -159,6 +380,8 @@ class Studio:
         with self.lock:
             if self.closing or self.jobs.busy(self.UPLOAD_JOB, "upload"):
                 return
+            if self.settings.get()["uploads_paused"]:
+                return              # resumed from the dashboard
             if not self.uploads.due():
                 self._schedule_uploads()
                 return
@@ -202,6 +425,12 @@ class Studio:
         settings = self.uploads.settings()
         existing = [e for e in self.uploads.entries()
                     if e["file"] == str(clip) and e["state"] != "cancelled"]
+        if (existing and not regenerate
+                and existing[0]["state"] not in ("uploading", "uploaded")
+                and publish_meta.devanagari_fields(existing[0]["metadata"])):
+            # Drafted before the Roman Hinglish policy: draft it again.
+            # Uploaded videos are never touched.
+            regenerate = True
         if existing and not regenerate:
             return existing[0]
         meta = publish_meta.generate(info, publish_meta.provider_for(state["options"]),
@@ -219,7 +448,8 @@ class Studio:
                 continue
         return sorted(result, key=lambda p: p["created"], reverse=True)
 
-    def enqueue(self, project_id, action, preview=False, pick=None, after_recording=False):
+    def enqueue(self, project_id, action, preview=False, pick=None, after_recording=False,
+                reason=None):
         if action not in {"prepare", "render", "all"}:
             raise ValueError("Unknown action.")
         if not isinstance(preview, bool):
@@ -242,8 +472,14 @@ class Studio:
                 raise ValueError("This recording is not finalized yet. Use "
                                  "Finalize recording (or Resume recording) "
                                  "first; clips are found automatically after.")
-            state.update(status="queued", stage=action, error=None)
+            state.update(status="queued", stage=action, error=None,
+                         last_action=action, last_preview=bool(preview), last_pick=pick)
             projects.save_project(path, state)
+            self.events.add("queued", f"{'Export' if action == 'all' else 'Render' if action == 'render' else 'Find clips'}"
+                            f"{' (preview)' if preview else ''} queued"
+                            f"{f' - {reason}' if reason else ''}"
+                            f"{' - processing is paused' if self.jobs.paused('process') else ''}.",
+                            project_id)
             self.cancelled.discard(project_id)
             job = self.jobs.submit("process", project_id, self._run, path, action,
                                    preview, pick, kind=action)
@@ -358,8 +594,20 @@ class Studio:
             cmd.append("--preview")
         if pick:
             cmd += ["--clips", pick]
+        log_path = path / "job.log"
         try:
-            with (path / "job.log").open("w", encoding="utf-8") as log:
+            # Append (Phase 6): earlier runs stay readable; rotate at 2 MB.
+            if log_path.exists() and log_path.stat().st_size > 2_000_000:
+                os.replace(log_path, path / "job.log.1")
+        except OSError:
+            pass
+        self.events.add("started", f"{action}{' preview' if preview else ''} started.", path.name)
+        started = time.time()
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {action}"
+                          f"{' preview' if preview else ''} =====\n")
+                log.flush()
                 with self.lock:
                     if self.closing:
                         return
@@ -376,21 +624,42 @@ class Studio:
                 state = projects.read_project(path)
                 state.update(status="cancelled", stage="cancelled", error=None)
                 projects.save_project(path, state)
+                self.events.add("cancelled", f"{action} cancelled.", path.name, level="warning")
             elif code:
                 state = projects.read_project(path)
                 state.update(status="failed", error=state.get("error") or "Job failed. Open the job log for setup or input details.")
                 projects.save_project(path, state)
+                self._log_failure(path, state)
+            else:
+                state = projects.read_project(path)
+                self.events.add("finished", f"{action} finished in {time.time() - started:.0f}s "
+                                f"({state.get('status')}).", path.name)
             return code
         except Exception as exc:
             state = projects.read_project(path)
             state.update(status="failed", error=str(exc))
             projects.save_project(path, state)
+            self._log_failure(path, state)
+
+    def _log_failure(self, path, state):
+        try:
+            with (path / "job.log").open("rb") as handle:
+                handle.seek(max(0, (path / "job.log").stat().st_size - 4000))
+                tail = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            tail = ""
+        diagnosis = automation.diagnose(state, tail) or {}
+        self.events.add("failed", f"Failed at {diagnosis.get('stage', 'unknown')}: "
+                        f"{diagnosis.get('problem', state.get('error'))}", path.name,
+                        level="error", advice=diagnosis.get("advice"))
 
     def close(self):
         with self.lock:
             self.closing = True
             if self.upload_timer is not None:
                 self.upload_timer.cancel()
+            if self.monitor_timer is not None:
+                self.monitor_timer.cancel()
             # Recordings stop now and are marked interrupted (parts are kept).
             for _, abort in list(self.recorders.values()):
                 abort.set()
@@ -480,6 +749,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if parts == ["api", "projects"]:
                 return self.send_json({"projects": self.app.list_projects()})
+            if parts == ["api", "overview"]:
+                return self.send_json(self.app.overview())
             if parts == ["api", "youtube"]:
                 query = parse_qs(urlsplit(self.path).query)
                 project = query.get("project", [None])[0]
@@ -530,6 +801,10 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["api", "detect"]:
                 # Network probe: deliberately outside the global lock.
                 return self.send_json(detect_source(body.get("source")))
+            if parts[:2] == ["api", "automation"]:
+                return self.automation_post(parts, body)
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "retry":
+                return self.send_json(self.app.retry(parts[2]))
             if parts[:2] == ["api", "youtube"] or parts[:2] == ["api", "uploads"] or (
                     len(parts) == 4 and parts[:2] == ["api", "projects"]
                     and parts[3] == "publish"):
@@ -559,12 +834,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(sources, list) or not 1 <= len(sources) <= 100 or any(not isinstance(s, str) or not s.strip() for s in sources):
                         raise ValueError("Provide 1 to 100 sources.")
                     options = projects.validate_options(body.get("options", {}))
-                    result = []
-                    for source in sources:
-                        state = projects.create_project(self.app.root, source, options)
-                        self.app.enqueue(state["id"], "prepare")
-                        result.append(state)
-                    return self.send_json({"projects": result}, 201)
+                    allow = body.get("allow_duplicates", False)
+                    if not isinstance(allow, bool):
+                        raise ValueError("allow_duplicates must be true or false.")
+                    result, duplicates = self.app.create_sources(
+                        [s.strip() for s in sources], options, allow_duplicates=allow)
+                    return self.send_json({"projects": result, "duplicates": duplicates}, 201)
                 if parts == ["api", "brands"]:
                     name = body["name"]
                     if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", name):
@@ -611,6 +886,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Project or transcript not found. Prepare the project first."}, 404)
         except (ValueError, KeyError, TypeError, OSError) as exc:
             self.send_json({"error": str(exc)}, 400)
+
+    def automation_post(self, parts, body):
+        app = self.app
+        try:
+            if parts == ["api", "automation", "settings"]:
+                result = app.settings.update(body.get("settings") or {})
+                app.events.add("settings", "Automation settings saved.")
+                app._schedule_monitor()
+            elif parts == ["api", "automation", "pause"]:
+                result = app.set_paused(body.get("target"), body.get("paused") is True)
+            elif parts == ["api", "automation", "channels"]:
+                result = app.monitor.add(body.get("url"), body.get("label", ""))
+                app.events.add("monitor", f"Monitoring {result['url']} (existing videos "
+                               "are skipped; only new ones are processed).")
+                app._schedule_monitor()
+            elif (len(parts) == 5 and parts[:3] == ["api", "automation", "channels"]
+                  and parts[4] == "remove"):
+                app.monitor.remove(parts[3])
+                app._schedule_monitor()
+                result = {"ok": True}
+            elif parts == ["api", "automation", "check"]:
+                threading.Thread(target=app.check_channels, daemon=True).start()
+                result = {"ok": True, "started": True}
+            else:
+                return self.send_json({"error": "Not found."}, 404)
+            return self.send_json(result)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            return self.send_json({"error": str(exc)}, 400)
 
     def youtube_post(self, parts, body):
         app = self.app
@@ -707,6 +1010,8 @@ def make_server(root="projects", port=8765):
     server.app = Studio(root)
     # Resume uploads the user already approved (e.g. interrupted by a restart).
     server.app.kick_uploads()
+    # Phase 6: resume interrupted processing (setting) and arm the monitor.
+    server.app.start_automation()
     return server
 
 

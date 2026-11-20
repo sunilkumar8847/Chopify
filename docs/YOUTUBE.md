@@ -59,6 +59,18 @@ has finished processing (50 quota units each, from the general bucket).
 change it in YouTube Studio. (Chopify still saves a `.png` poster next to each
 clip that you can upload there.)
 
+**Language.** Titles, descriptions, tags and hashtags are written in Roman
+script: English clips in English, Hindi clips in natural Hinglish. Devanagari
+is never accepted — if the AI writes it, Chopify asks again and otherwise
+transliterates it (and says so); if you type it, Chopify refuses and suggests
+a Roman spelling. Drafts made before this rule are re-drafted when opened;
+uploaded videos are not changed.
+
+**Automation.** Batch processing and channel monitoring (see
+[AUTOMATION.md](AUTOMATION.md)) only create clips. They never draft or approve
+uploads; publishing always needs your confirmation per clip. **Pause uploads**
+on the dashboard stops new uploads from starting.
+
 ## Quota and limits
 
 YouTube uses a granular quota system (since June 2026). Each Google Cloud

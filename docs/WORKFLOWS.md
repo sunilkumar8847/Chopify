@@ -81,6 +81,37 @@ Use `--action prepare` to discover candidates, `--action render` to preserve you
 manual clip edits, and `--action all` for the whole pipeline. If a selection input
 has changed, preparing again can replace manually edited candidate ranges.
 
+## Caption and metadata language (Roman Hinglish)
+
+Everything Chopify generates for viewers is written in Roman (Latin) script:
+
+| Speech | Captions, titles and descriptions |
+|---|---|
+| Hindi (Whisper writes Devanagari) | natural Hinglish: "आज मैंने पहली बार GTA 6 खेला" → "aaj maine pehli baar GTA 6 khela" |
+| Hinglish already in Roman letters | unchanged |
+| English | unchanged |
+
+English words that Whisper spells in Devanagari are restored ("गेमप्ले" →
+"gameplay"). Conversion is word by word, so every caption keeps its Whisper
+timestamps, and the burned-in captions and the SRT file use the same words and
+cue timing. `transcript.json` keeps the original words for scoring and AI
+judging; the converted words are saved in `transcript.display.json`.
+
+The project setting **AI spelling polish for Hinglish captions** asks the local
+model to improve transliterated spellings; a suggestion is only used when it
+is Roman script and sounds like the same word, so the model cannot translate
+or drop words. Rules alone are the default (faster, and the 3B model rarely
+improves on them).
+
+Titles, descriptions, tags and hashtags must not contain Devanagari. AI
+output with Devanagari is retried and otherwise transliterated (with a note
+to review it); a manual edit with Devanagari is refused with a suggested
+Roman spelling. Projects created before this policy are upgraded without
+transcribing again: hooks and clip titles are converted when the project is
+opened by a job, publish drafts are re-drafted when you open them, and
+**Export again** burns in Hinglish captions (Studio marks such clips).
+Uploaded videos are never changed.
+
 ## Edit captions and export SRT
 
 Studio's **Transcript** tab edits individual word text and start/end times in
@@ -428,6 +459,7 @@ automatic face tracking for horizontal crops.
 
 ```text
 projects/
+  .studio/           # dashboard settings, monitored channels, events.jsonl
   brands/channel.json
   <id>/
     project.json       # source, settings, stage status, cache records
@@ -438,8 +470,11 @@ projects/
     candidates.partNNN.json # resumable 30-minute discovery blocks
     selection.json     # threshold, score range, counts, durations
     segments.json      # editable clip candidates (the render contract)
+    highlights_cache.json # AI judge results, saved one by one (Phase 2)
+    transcript.display.json # Roman Hinglish words for captions (same timing)
+    hinglish_cache.json # cached Hinglish conversions
     embeddings.json    # optional semantic-search cache
-    job.log            # dashboard job output
+    job.log            # job output, appended per run (job.log.1 when rotated)
     discovery.m4a      # long-URL audio; discovery.mp4 when there is no audio or no speech
     source.mp4         # short-URL footage; local files stay in place
     sections/          # cached long-URL ranges, removed after final render
@@ -449,5 +484,7 @@ projects/
 
 The default single-video CLI directory is `work/`; latest exports are also copied
 to `clips/` (or `--out`). Filenames include a clip number and render signature,
-followed by the title. Studio shows saved variants for comparison. Automatic
-social uploads and scheduling are not included.
+followed by the title. Studio shows saved variants for comparison. Uploading
+to YouTube needs your approval per clip (see [YOUTUBE.md](YOUTUBE.md)); the
+[automation dashboard](AUTOMATION.md) covers batch work, monitoring and
+recovery.

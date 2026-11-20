@@ -26,16 +26,13 @@ If the LLM is unavailable or returns unusable output, the shortlisted clips
 keep their rule scores (the previous behaviour) and steps 4-5 still apply.
 Degenerate output (every clip given the identical scores) counts as unusable.
 """
-import contextlib
 import hashlib
 import json
 import math
-import os
 import re
-import threading
-import time
 from pathlib import Path
 
+import jsoncache
 import llm as llm_mod
 
 VERSION = 1
@@ -209,70 +206,22 @@ def load_cache(workdir):
     return {}
 
 
-_CACHE_THREAD_LOCK = threading.Lock()
 CACHE_LOCK_TIMEOUT = 30.0   # seconds to wait for another writer
-CACHE_LOCK_STALE = 120.0    # a lock file this old was left by a crash
 
 
-@contextlib.contextmanager
 def _cache_lock(workdir):
-    """Exclusive access to the cache for threads *and* processes.
+    """Exclusive access to the cache for threads and processes (jsoncache)."""
+    return jsoncache.locked(Path(workdir) / CACHE_FILE, timeout=CACHE_LOCK_TIMEOUT,
+                            stale=CACHE_LOCK_STALE)
 
-    A lock file created with O_EXCL works across processes (Studio job,
-    CLI run) on Windows and POSIX; a thread lock covers this process.
-    """
-    path = Path(workdir) / (CACHE_FILE + ".lock")
-    deadline = time.monotonic() + CACHE_LOCK_TIMEOUT
-    with _CACHE_THREAD_LOCK:
-        while True:
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
-                os.close(fd)
-                break
-            except FileExistsError:
-                try:
-                    if time.time() - path.stat().st_mtime > CACHE_LOCK_STALE:
-                        path.unlink()
-                        continue
-                except OSError:
-                    continue
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"{path.name} is held by another process")
-                time.sleep(0.05)
-        try:
-            yield
-        finally:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+
+CACHE_LOCK_STALE = 120.0    # a lock file this old was left by a crash
 
 
 def _write_cache(workdir, entries):
     """Atomic replace: readers see the old file or the new one, never half."""
-    path = Path(workdir) / CACHE_FILE
-    temp = path.with_name(f"{CACHE_FILE}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        with open(temp, "w", encoding="utf-8") as handle:
-            json.dump({"version": VERSION, "entries": entries}, handle,
-                      ensure_ascii=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        for attempt in range(20):
-            try:
-                os.replace(temp, path)
-                return
-            except PermissionError:
-                # Windows: a reader has the file open for a moment.
-                if attempt == 19:
-                    raise
-                time.sleep(0.05)
-    finally:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
+    jsoncache.write_atomic(Path(workdir) / CACHE_FILE,
+                           {"version": VERSION, "entries": entries})
 
 
 def update_cache(workdir, add=None, remove=()):

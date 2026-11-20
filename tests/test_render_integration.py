@@ -140,3 +140,33 @@ def test_render_from_section_offset_reads_local_video_not_source_start(tmp_path)
     red, green = frame[0], frame[1]
     assert green > 100 and red < 80
     assert "00:00:00,000" in out.with_suffix(".srt").read_text()
+
+
+def test_hindi_words_render_roman_captions_srt_and_metadata(source, tmp_path, monkeypatch):
+    """Output policy: burned-in captions, SRT, file name and meta are Roman."""
+    import hinglish
+    seen = {}
+    real_build_ass = render_clips.build_ass
+
+    def spy(words, *args, **kwargs):
+        seen["ass_words"] = [w["word"] for w in words]
+        return real_build_ass(words, *args, **kwargs)
+    monkeypatch.setattr(render_clips, "build_ass", spy)
+    words = [{"word": "आज", "start": 0.5, "end": 0.8},
+             {"word": "मैंने", "start": 0.8, "end": 1.1},
+             {"word": "पहली", "start": 1.1, "end": 1.4},
+             {"word": "बार", "start": 1.4, "end": 1.7},
+             {"word": "GTA", "start": 1.7, "end": 2.0},
+             {"word": "खेला।", "start": 2.0, "end": 2.4}]
+    out = render_clips.render(
+        {"id": "001", "start": 0.5, "end": 2.5, "hook": "पहली बार GTA"},
+        words, source, 640, 360, tmp_path, "9:16", out_dir=tmp_path / "render")
+    srt = out.with_suffix(".srt").read_text(encoding="utf-8")
+    meta = json.loads(out.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert seen["ass_words"][:6] == ["aaj", "maine", "pehli", "baar", "GTA", "khela."]
+    cues = [block.splitlines()[2] for block in srt.strip().split("\n\n")]
+    assert cues == ["aaj maine", "pehli baar", "GTA khela."]
+    assert not hinglish.has_devanagari(srt)
+    assert not hinglish.has_devanagari(out.name) and "pehli-baar-gta" in out.name
+    assert meta["title"].startswith("Pehli baar GTA") and not hinglish.has_devanagari(json.dumps(meta, ensure_ascii=False))
+    assert words[0]["word"] == "आज", "the caller's original words are untouched"

@@ -13,8 +13,13 @@ Job states:  queued -> running -> succeeded | failed | cancelled
 * A lane accepts one active job per project, so the same project is never
   processed twice at once.
 
+Pausing a lane (Phase 6) lets its running job finish but starts nothing
+new until it is resumed; a queued job reports ``waiting`` = True meanwhile and
+can still be cancelled.
+
 Jobs live in memory. Durable progress is in each project's project.json; on
-restart Studio marks unfinished work ``interrupted`` and the user resumes it.
+restart Studio marks unfinished work ``interrupted`` and resumes it (Phase 6
+automation setting) or the user does.
 """
 from concurrent.futures import ThreadPoolExecutor
 import itertools
@@ -52,6 +57,7 @@ class Job:
         self.started = None
         self.finished = None
         self.future = None
+        self.waiting = False          # queued behind a paused lane
         self.cancel_event = threading.Event()
         self._cancel_callbacks = []
         self._lock = threading.Lock()
@@ -82,7 +88,8 @@ class Job:
                 "kind": self.kind, "state": self.state,
                 "attempts": self.attempts, "max_attempts": self.max_attempts,
                 "error": self.error, "created": self.created,
-                "started": self.started, "finished": self.finished}
+                "started": self.started, "finished": self.finished,
+                "waiting": self.waiting}
 
 
 class JobManager:
@@ -95,6 +102,24 @@ class JobManager:
         self.lock = threading.RLock()
         self.jobs = {}
         self.closing = False
+        # set = running; cleared = paused (queued jobs wait before starting)
+        self.gates = {lane: threading.Event() for lane in lanes}
+        for gate in self.gates.values():
+            gate.set()
+
+    # ---------------------------------------------------------------- pause
+    def pause(self, lane):
+        if lane not in self.gates:
+            raise JobError(f"Unknown job lane: {lane}")
+        self.gates[lane].clear()
+
+    def resume(self, lane):
+        if lane not in self.gates:
+            raise JobError(f"Unknown job lane: {lane}")
+        self.gates[lane].set()
+
+    def paused(self, lane):
+        return lane in self.gates and not self.gates[lane].is_set()
 
     # ---------------------------------------------------------------- query
     def active(self, project_id=None, lane=None):
@@ -147,6 +172,11 @@ class JobManager:
                            retry_delay=job.retry_delay, **job.kwargs)
 
     def _execute(self, job):
+        gate = self.gates.get(job.lane)
+        while gate is not None and not gate.is_set() and not job.cancel_event.is_set():
+            job.waiting = True
+            gate.wait(0.2)
+        job.waiting = False
         with job._lock:
             if job.cancel_event.is_set():
                 job.state, job.finished = "cancelled", time.time()
@@ -193,6 +223,8 @@ class JobManager:
         with self.lock:
             self.closing = True
             jobs = [job for job in self.jobs.values() if job.active]
+        for gate in self.gates.values():
+            gate.set()
         for job in jobs:
             self.cancel(job.id)
         for executor in self.executors.values():

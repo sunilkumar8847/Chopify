@@ -30,11 +30,14 @@ Chopify is an open-source Python app with a local browser dashboard and a CLI. I
 | Feature | How it helps |
 | --- | --- |
 | **Local browser dashboard** | Queue videos, watch job progress, review candidates, edit words and timestamps, and download exports. |
+| **Automation dashboard** | One view of every project's stages (source, transcription, discovery, selection, render, upload), with pause/resume, retry and cancel, failure explanations with what to do, an activity log, and recovery after a restart. See [Automation](docs/AUTOMATION.md). |
+| **Channel monitoring (optional)** | New videos on channels you choose become projects and live streams are recorded, within a daily limit. Nothing is ever published automatically. |
+| **Hinglish captions and metadata** | Hindi speech is captioned in natural Roman-script Hinglish ("aaj maine pehli baar GTA 6 khela"), never Devanagari; English stays English. Word timestamps are kept, so burned-in captions and SRT stay in sync. |
 | **Local video input** | Use MP4, MOV, MKV, WebM, M4V, or AVI recordings directly, or download a yt-dlp-supported URL. |
 | **Any-length sources** | Podcasts, movies, streams, and gameplay VODs work without a duration setting. Long sources switch to a resumable audio-first path automatically. |
 | **Audio and visual discovery** | A local 1 Hz audio timeline boosts reactions, laughs, impacts, and gameplay events, while cached 2 fps visual analysis catches motion spikes, scene/UI changes, faces, and action arcs. Speech-sparse and action-only sources can still produce clips. |
 | **Resumable projects** | Reuse matching downloads, transcripts, and completed renders. Retry a failed job without discarding successful clips. |
-| **Batch queue** | Add one source per line in Studio or use a JSON list in the CLI. Each video has an isolated project folder. |
+| **Batch queue** | Add one source per line in Studio or use a JSON list in the CLI. Each video has an isolated project folder; a video that already has a project is skipped. |
 | **Caption Studio** | Choose from 13 caption looks, then tune font, size, colors, outline, shadow, cue length, position, box background, and word motion. A live overlay follows the source; automatic emphasis and emoji are optional. |
 | **Caption editor and SRT export** | Fix transcription mistakes before rendering. Burnt captions and SRT files share the same timeline, including tightened cuts. |
 | **Reusable brand presets** | Save a caption look and optional logo in JSON. A named preset, brand preset, and project override layer in that order. |
@@ -284,14 +287,16 @@ No. Split-screen uses two adjustable horizontal crop centers for a fixed camera 
 
 ### What happens if processing fails or Studio closes?
 
-Completed stages and clips remain on disk. Restart Studio and queue the saved project again, or rerun the CLI with `--project PATH`. Interrupted jobs are marked for explicit retry. Changing the source, transcription model, selection settings, words, brand, or render options invalidates the relevant cached work. Do not run two writers against the same project directory at once.
+Completed stages and clips remain on disk. The dashboard shows which stage failed and what to do; press **Retry** to continue (finished stages are reused), or rerun the CLI with `--project PATH`. Jobs interrupted by closing Studio are queued again when it starts (an automation setting you can switch off). Changing the source, transcription model, selection settings, words, brand, or render options invalidates the relevant cached work. Do not run two writers against the same project directory at once.
 
 ### Can it edit translated or multilingual subtitles?
 
-Whisper detects spoken language, and captions retain its transcription. The heuristic cue lists are English-oriented; punctuation and timing can vary by language. This update does not add translation, bilingual captions, or dubbing. Caption fonts must contain the glyphs you need.
+Whisper detects spoken language. English captions keep the English transcription; Hindi speech is captioned in Roman-script Hinglish (not translated, never Devanagari), and AI titles and descriptions follow the same rule. The original transcript is kept for scoring. Translation, bilingual captions and dubbing are not included.
 
 ## Developer and agent documentation
 
+- [Architecture and workflow blueprint](docs/ARCHITECTURE.md)
+- [Automation dashboard, batch, monitoring, recovery](docs/AUTOMATION.md)
 - [Workflow guide and project layout](docs/WORKFLOWS.md)
 - [CLI flag reference](docs/CLI.md)
 - [CLI, Python interfaces, and local HTTP API](docs/AGENT-API.md)

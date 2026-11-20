@@ -525,10 +525,10 @@ def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
 def write_meta(seg, out_path, render_info=None):
     """Deterministic ready-to-post metadata saved as <clip>.meta.json."""
     hook = str(seg.get("hook", "clip")).replace("-", " ").strip()
-    title = hook.capitalize()
+    title = hook[:1].upper() + hook[1:]     # keep "GTA", names, etc.
     meta = {
         "title": f"{title} #shorts",
-        "description": (f"{hook.capitalize()} - full video on the channel.\n"
+        "description": (f"{title} - full video on the channel.\n"
                         "#shorts #reels #fyp #viral #podcast"),
         "hashtags": ["#shorts", "#reels", "#fyp", "#viral"],
         "score": seg.get("overall"),
@@ -832,7 +832,17 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
            layout="single", centers=(0.25, 0.75), caption=None,
            source_offset=0.0, framing_mode="auto"):
     import framing
+    import hinglish
     from captions import write_srt
+    # Output-language policy: captions, SRT, file name and metadata are
+    # Roman script. Callers normally pass converted display words already
+    # (projects.py); this gate catches every other path.
+    if any(hinglish.has_devanagari(w.get("word")) or hinglish.has_foreign(w.get("word"))
+           for w in words):
+        words = hinglish.Converter().convert_words(words)
+    if hinglish.has_devanagari(seg.get("hook")):
+        seg = {**seg, "hook_original": seg["hook"],
+               "hook": hinglish.romanize(seg["hook"])}
     out_dir = (Path(out_dir) if out_dir else default_out()).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     source = Path(source).resolve()

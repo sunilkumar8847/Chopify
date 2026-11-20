@@ -1,8 +1,9 @@
 """Phase 5: titles, descriptions, hashtags and tags for YouTube Shorts.
 
 ``generate`` asks the configured local LLM (Phase 2 provider, Ollama + Qwen by
-default) for metadata in the clip's own language, then ``clean`` enforces
-YouTube's limits. If the model is unavailable or answers badly, a rule-based
+default) for metadata, then ``clean`` enforces YouTube's limits and the
+output-language policy: English stays English, Hindi and Hinglish are written
+as Roman-script Hinglish, and Devanagari is never accepted (see hinglish.py). If the model is unavailable or answers badly, a rule-based
 draft is used instead. Either way the result is only a draft: the user edits
 and approves it before anything is uploaded.
 
@@ -13,6 +14,7 @@ YouTube limits enforced (YouTube Data API v3, videos resource):
 """
 import re
 
+import hinglish
 import llm as llm_mod
 
 TITLE_MAX = 100
@@ -26,13 +28,17 @@ CATEGORIES = {"1": "Film & Animation", "2": "Autos & Vehicles", "10": "Music",
               "20": "Gaming", "22": "People & Blogs", "23": "Comedy",
               "24": "Entertainment", "25": "News & Politics",
               "26": "Howto & Style", "27": "Education", "28": "Science & Technology"}
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2   # 2: Roman-script Hinglish only (no Devanagari)
+POLICY_FIELDS = ("title", "description", "hashtags", "tags")
 
 SYSTEM_PROMPT = (
     "You write YouTube Shorts metadata for ONE short clip, from its transcript.\n"
-    "Write in the clip's own language and style: English stays English, Hindi "
-    "in Devanagari stays Devanagari, and Hinglish (Hindi in Latin letters) "
-    "stays Hinglish - do not translate it to English.\n"
+    "LANGUAGE (strict): write only in Latin/Roman letters. English clips stay "
+    "natural English. Hindi or Hinglish clips are written in natural "
+    "Hinglish: Hindi words typed in Roman letters the way Indians type on "
+    "WhatsApp (\"Bhai aaj ka gameplay bahut crazy tha\"), with English words "
+    "kept in English. Never use Devanagari script. Do not translate Hinglish "
+    "into formal English; keep the slang, humour and tone.\n"
     "title: under 70 characters about what happens in THIS clip; a specific "
     "hook, honest, no misleading clickbait, no hashtags. Never reuse the full "
     "video's title.\n"
@@ -42,8 +48,22 @@ SYSTEM_PROMPT = (
     "tags: 5-12 lowercase search phrases, words separated by spaces.\n"
     "Reply with JSON only."
 )
-HINDI_FILLER = set("""है हैं था थे थी का की के को ने से में पर और एक दो तीन यह वह ये वो
-नाम बात कुछ भी तो ही हम तुम आप मैं""".split())
+HINDI_NOTE = (
+    "This clip is spoken in Hindi; its transcript above is already written in "
+    "Roman letters. Write the title and description in the same Roman-letter "
+    "Hinglish as the transcript: reuse the speaker's own words and phrases, keep "
+    "English words in English. Use only Latin letters (a-z).")
+HINGLISH_NOTE = ("Your title was plain English. The clip is Hindi: rewrite the "
+                 "title and description in natural Hinglish (Roman letters).")
+HINGLISH_MARKERS = set("""hai hain tha thi the kya nahi nahin bhai yaar aaj kal
+mein main maine mujhe hum tum aap ka ki ke ko se ne bahut accha acha kaise kyun
+kyunki raha rahi rahe gaya gayi hua kar karo karna dekho chalo pehli pehla baar
+ghar paani maza mast toh bhi wala wali yeh woh""".split())
+RETRY_NOTE = ("Your previous answer contained Devanagari letters. Rewrite every "
+              "field in Roman (Latin) letters only, as natural Hinglish.")
+HINDI_FILLER = set("""hai hain tha the thi ka ki ke ko ne se mein me par pe aur ek do
+teen yeh ye woh wo naam baat kuch bhi toh to hi hum tum aap main nahi kya
+koi sab abhi phir bas haan ji arre yaar raha rahi rahe gaya kar karo""".split())
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -67,12 +87,34 @@ def _plain(text):
 
 
 def _hashtag(word):
-    word = re.sub(r"[^\wऀ-ॿ]", "", str(word or "").lstrip("#"))[:30]
-    hindi = re.search(r"[ऀ-ॿ]", word)
-    if (len(word) < 3 and not hindi) or word.isdigit() \
-            or word.lower() in STOPWORDS or word in HINDI_FILLER:
+    word = re.sub(r"[^\w]", "", str(word or "").lstrip("#"))[:30]
+    if (len(word) < 3 or word.isdigit() or word.lower() in STOPWORDS
+            or word.lower() in HINDI_FILLER or hinglish.has_devanagari(word)):
         return ""
     return word
+
+
+def devanagari_fields(meta):
+    """Names of policy fields that contain Devanagari."""
+    found = []
+    for field in POLICY_FIELDS:
+        value = meta.get(field) if isinstance(meta, dict) else None
+        values = value if isinstance(value, list) else [value]
+        if any(hinglish.has_devanagari(v) for v in values):
+            found.append(field)
+    return found
+
+
+def romanize_meta(meta):
+    """Transliterate the policy fields (safe fallback for model output)."""
+    result = dict(meta)
+    for field in POLICY_FIELDS:
+        value = result.get(field)
+        if isinstance(value, list):
+            result[field] = [hinglish.romanize(v) for v in value]
+        elif value is not None:
+            result[field] = hinglish.romanize(value)
+    return result
 
 
 def _truncate_bytes(text, limit):
@@ -87,6 +129,13 @@ def clean(meta, defaults=None):
     defaults = defaults or {}
     if not isinstance(meta, dict):
         raise ValueError("Metadata must be an object.")
+    bad = devanagari_fields(meta)
+    if bad:
+        suggestion = romanize_meta(meta).get("title") if "title" in bad else ""
+        raise ValueError(
+            "Output policy: write " + ", ".join(bad) + " in Roman letters "
+            "(Hinglish), not Devanagari."
+            + (f' Suggested title: "{_plain(suggestion)}"' if suggestion else ""))
     title = _plain(meta.get("title"))
     if len(title) > TITLE_MAX:
         title = title[:TITLE_MAX - 1].rstrip() + "…"
@@ -133,9 +182,10 @@ def clean(meta, defaults=None):
 
 def _keywords(text, limit=8):
     counts = {}
-    for word in re.findall(r"[\wऀ-ॿ']+", str(text).lower()):
+    for word in re.findall(r"[\w']+", hinglish.romanize(text).lower()):
         word = word.strip("'")
-        if len(word) < 4 or word in STOPWORDS or word.isdigit():
+        if (len(word) < 4 or word in STOPWORDS or word in HINDI_FILLER
+                or word.isdigit()):
             continue
         counts[word] = counts.get(word, 0) + 1
     return [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))][:limit]
@@ -143,8 +193,8 @@ def _keywords(text, limit=8):
 
 def fallback(info):
     """Rule-based draft: the hook as title, first sentence as description."""
-    hook = _plain(info.get("hook")) or "Clip"
-    text = _plain(info.get("text"))
+    hook = _plain(hinglish.romanize(info.get("hook"))) or "Clip"
+    text = _plain(hinglish.romanize(info.get("text")))
     first = re.split(r"(?<=[.!?।])\s+", text)[0] if text else ""
     title = hook[:1].upper() + hook[1:]
     keywords = _keywords(text + " " + _plain(info.get("source_title")))
@@ -153,12 +203,34 @@ def fallback(info):
 
 
 def _norm(text):
-    return re.sub(r"[^\w\u0900-\u097F]+", " ", str(text or "").lower()).strip()
+    return re.sub(r"[^\w]+", " ", hinglish.romanize(text).lower()).strip()
 
 
 def _copies_video_title(title, source_title):
     title, source = _norm(title), _norm(source_title)
-    return bool(title and source and (title == source or title in source))
+    if not (title and source):
+        return False
+    if title == source or title in source:
+        return True
+    words = [w for w in title.split() if len(w) > 1]
+    # the same words in another order ("GTA 6 MY FIRST DAY IN VICE CITY")
+    return len(words) >= 3 and sum(w in source.split() for w in words) >= 0.8 * len(words)
+
+
+def _short_description(text, sentences=2, limit=300):
+    """An AI description is 1-2 sentences; a small model sometimes pastes
+    the whole transcript instead."""
+    text = str(text or "").strip()
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    short = " ".join(parts[:sentences])
+    if len(short) > limit:
+        short = short[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return short
+
+
+def looks_hinglish(text):
+    words = re.findall(r"[a-z]+", str(text or "").lower())
+    return any(w in HINGLISH_MARKERS for w in words)
 
 
 def generate(info, provider=None, defaults=None):
@@ -166,24 +238,64 @@ def generate(info, provider=None, defaults=None):
     summary. Returns clean metadata plus "source": "ai" or "rules"."""
     draft = None
     reason = ""
+    notes = []
     if provider is not None:
         ok, reason = provider.available()
         if ok:
+            language = info.get("language") or "unknown"
+            hindi = (language.startswith("hi") or hinglish.has_devanagari(info.get("text"))
+                     or looks_hinglish(info.get("text")))
+            if hinglish.has_devanagari(info.get("text")):
+                language += " (shown here as Roman Hinglish)"
+            # The model sees Roman text only, so it has no Devanagari to copy.
             user = "\n".join(filter(None, [
-                f"Video: {_plain(info.get('source_title'))[:150]}" if info.get("source_title") else "",
-                f"Detected language: {info.get('language') or 'unknown'}",
-                f"What happens: {_plain(info.get('summary'))[:200]}" if info.get("summary") else "",
-                f"Clip transcript: {_plain(info.get('text'))[:1500]}"]))
-            for _ in range(2):
+                f"Video: {_plain(hinglish.romanize(info.get('source_title')))[:150]}" if info.get("source_title") else "",
+                f"Detected language: {language}",
+                (f"What happens (English context only - do not copy its language): "
+                 f"{_plain(hinglish.romanize(info.get('summary')))[:200]}"
+                 if info.get("summary") else ""),
+                f"Clip transcript: {_plain(hinglish.romanize(info.get('text')))[:1500]}",
+                HINDI_NOTE if hindi else ""]))
+            prompt = user
+            asked_hinglish = False
+            for _ in range(3):
                 try:
-                    raw = provider.chat_json(SYSTEM_PROMPT, user, SCHEMA)
+                    raw = provider.chat_json(SYSTEM_PROMPT, prompt, SCHEMA)
                 except llm_mod.LLMError as exc:
                     reason = str(exc)
                     continue
-                if isinstance(raw, dict) and _plain(raw.get("title")):
-                    draft = {**raw, "source": "ai"}
-                    break
-                reason = "The model returned no usable title."
+                if not (isinstance(raw, dict) and _plain(raw.get("title"))):
+                    reason = "The model returned no usable title."
+                    continue
+                draft = {**raw, "source": "ai"}
+                if devanagari_fields(raw):
+                    # Never accepted silently: ask again, then transliterate.
+                    reason = "The model wrote Devanagari."
+                    prompt = user + "\n" + RETRY_NOTE
+                    continue
+                if hindi and not asked_hinglish and not looks_hinglish(
+                        f"{raw.get('title')} {raw.get('description')}"):
+                    asked_hinglish = True        # one more try for Hinglish
+                    prompt = user + "\n" + HINGLISH_NOTE
+                    reason = ""
+                    continue
+                reason = ""
+                break
+            if (draft is not None and hindi and not devanagari_fields(draft)
+                    and not looks_hinglish(f"{draft.get('title')} {draft.get('description')}")):
+                notes.append("The AI wrote this Hindi clip's title in English; "
+                             "edit it into Hinglish if you prefer.")
+    if draft is not None and devanagari_fields(draft):
+        draft = romanize_meta(draft)
+        notes.append("The AI wrote Devanagari; it was transliterated to "
+                     "Roman Hinglish. Please review the wording.")
+        reason = ""
+    if draft is not None:
+        # other scripts a small model sometimes mixes in (policy: Roman only)
+        for field in ("title", "description"):
+            if isinstance(draft.get(field), str):
+                draft[field] = hinglish.strip_foreign(draft[field])
+        draft["description"] = _short_description(draft.get("description"))
     if draft is None:
         draft = fallback(info)
     elif _copies_video_title(draft.get("title"), info.get("source_title")):
@@ -197,10 +309,13 @@ def generate(info, provider=None, defaults=None):
         result = clean(fallback(info), defaults)
         source = "rules"
     result["source"] = source
+    result["policy"] = "hinglish-roman"
     if source == "rules" and reason:
-        result["note"] = f"AI unavailable ({reason}); simple draft used."
+        notes.insert(0, f"AI unavailable ({reason}); simple draft used.")
     elif source == "ai" and reason:
-        result["note"] = reason
+        notes.insert(0, reason)
+    if notes:
+        result["note"] = " ".join(notes)
     return result
 
 

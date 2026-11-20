@@ -20,6 +20,9 @@
         <span class="dot"></span> Processing stays on this computer
       </div>
       <button id="new-project" class="primary wide">＋ New project</button>
+      <button id="open-dashboard" class="wide rail-dashboard">
+        ▤ Dashboard <span id="dash-badge" class="dash-badge" hidden></span>
+      </button>
       <div class="rail-heading">
         YOUR PROJECTS <span id="project-count">0</span>
       </div>
@@ -38,6 +41,158 @@
         ><span id="connection"><span class="dot"></span> Local session</span>
       </header>
       <div id="notice" role="status" aria-live="polite" hidden></div>
+      <section id="dashboard-view" class="view" hidden>
+        <div class="dash-head">
+          <div>
+            <span class="eyebrow">AUTOMATION DASHBOARD</span>
+            <h1 class="dash-title">Everything, <em>at a glance.</em></h1>
+            <p class="muted">
+              Sources, transcription, clips, renders and uploads for every
+              project. Nothing is ever published without your approval.
+            </p>
+          </div>
+          <div class="dash-controls" role="group" aria-label="Queue controls">
+            <button id="dash-pause-processing" type="button">
+              Pause processing
+            </button>
+            <button id="dash-pause-uploads" type="button">Pause uploads</button>
+            <button id="dash-refresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="dash-cards" class="dash-cards" aria-live="polite"></div>
+        <section class="panel dash-panel">
+          <div class="panel-title">
+            <h2>Pipeline</h2>
+            <span id="dash-project-count">0 PROJECTS</span>
+          </div>
+          <div class="dash-legend muted">
+            <span><i class="stage-dot done"></i>done</span>
+            <span><i class="stage-dot active"></i>running</span>
+            <span><i class="stage-dot failed"></i>failed</span>
+            <span><i class="stage-dot pending"></i>not yet</span>
+          </div>
+          <div class="table-scroll">
+            <table class="dash-table">
+              <thead>
+                <tr>
+                  <th scope="col">Project</th>
+                  <th scope="col">Source</th>
+                  <th scope="col">Transcribe</th>
+                  <th scope="col">Discover</th>
+                  <th scope="col">Select</th>
+                  <th scope="col">Render</th>
+                  <th scope="col">Upload</th>
+                  <th scope="col">Status</th>
+                  <th scope="col"><span class="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody id="dash-rows"></tbody>
+            </table>
+          </div>
+        </section>
+        <div class="dash-grid">
+          <section class="panel dash-panel">
+            <div class="panel-title">
+              <h2>Upload queue</h2>
+              <span id="dash-upload-summary"></span>
+            </div>
+            <ul id="dash-uploads" class="dash-list"></ul>
+            <p class="hint">
+              Uploads start only after you approve a clip in its project
+              (Publish… → Upload to YouTube…). Private by default.
+            </p>
+          </section>
+          <section class="panel dash-panel">
+            <div class="panel-title">
+              <h2>Jobs</h2>
+              <span id="dash-job-summary"></span>
+            </div>
+            <ul id="dash-jobs" class="dash-list"></ul>
+          </section>
+        </div>
+        <div class="dash-grid">
+          <section class="panel dash-panel">
+            <div class="panel-title">
+              <h2>Channel monitoring</h2>
+              <span id="dash-monitor-state">OFF</span>
+            </div>
+            <p class="hint">
+              New videos on these channels become projects (and live streams
+              become recordings) automatically, within the daily limit.
+              Existing videos are skipped. Clips are never uploaded
+              automatically.
+            </p>
+            <ul id="dash-channels" class="dash-list"></ul>
+            <form id="dash-channel-form" class="dash-inline">
+              <label class="sr-only" for="dash-channel-url">Channel URL</label>
+              <input
+                id="dash-channel-url"
+                placeholder="https://www.youtube.com/@channel"
+                required
+              /><label class="sr-only" for="dash-channel-label">Label</label
+              ><input id="dash-channel-label" placeholder="Label (optional)" />
+              <button type="submit">Add channel</button>
+            </form>
+            <button id="dash-check-now" type="button">Check channels now</button>
+          </section>
+          <section class="panel dash-panel">
+            <div class="panel-title">
+              <h2>Automation settings</h2>
+              <span id="dash-usage"></span>
+            </div>
+            <form id="dash-settings-form" class="dash-settings">
+              <label class="check"
+                ><input name="monitor_enabled" type="checkbox" /> Monitor
+                channels</label
+              >
+              <label
+                >Check every (minutes)<input
+                  name="monitor_interval_minutes"
+                  type="number"
+                  min="5"
+                  max="1440"
+              /></label>
+              <label
+                >New sources per day (monitoring)<input
+                  name="max_new_sources_per_day"
+                  type="number"
+                  min="0"
+                  max="100"
+              /></label>
+              <label
+                >For a new video<select name="new_source_action">
+                  <option value="prepare">Find clips (review first)</option>
+                  <option value="all">Find clips and export</option>
+                  <option value="none">Only create the project</option>
+                </select></label
+              >
+              <label
+                >New project format<select name="aspect">
+                  <option>9:16</option>
+                  <option>16:9</option>
+                  <option>1:1</option>
+                </select></label
+              >
+              <label class="check"
+                ><input name="record_live" type="checkbox" /> Record live
+                streams found by monitoring</label
+              >
+              <label class="check"
+                ><input name="resume_after_restart" type="checkbox" /> Resume
+                interrupted jobs when Studio starts</label
+              >
+              <button class="wide" type="submit">Save automation settings</button>
+            </form>
+          </section>
+        </div>
+        <section class="panel dash-panel">
+          <div class="panel-title">
+            <h2>Activity log</h2>
+            <span>LATEST FIRST</span>
+          </div>
+          <ol id="dash-events" class="dash-events"></ol>
+        </section>
+      </section>
       <section id="new-view" class="view">
         <div class="intro">
           <span class="eyebrow">FROM LONG FORM TO THE GOOD PART</span>
@@ -301,6 +456,13 @@
                 <h2>Rendered clips</h2>
                 <span id="output-count">0 FILES</span>
               </div>
+              <p id="legacy-captions" class="hint legacy-note" hidden>
+                Some clips were exported before captions switched to Roman
+                Hinglish. Their titles are already updated; press
+                <strong>Export selected</strong> again to burn in Hinglish
+                captions (the transcript is reused, nothing is transcribed
+                again).
+              </p>
               <div id="outputs">
                 <p class="muted">
                   Choose candidates and make a preview or export.
@@ -478,6 +640,10 @@
               <label class="check"
                 ><input name="highlights" type="checkbox" /> Fewer, better clips
                 (AI judge + duplicate removal)</label
+              >
+              <label class="check"
+                ><input name="hinglish_ai" type="checkbox" /> AI spelling polish
+                for Hinglish captions (slower; Roman script either way)</label
               >
               <label class="check"
                 ><input name="tighten" type="checkbox" /> Remove fillers & long

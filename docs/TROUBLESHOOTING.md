@@ -49,6 +49,24 @@ Try `--whisper-model small` or `tiny` and `--device cpu`. faster-whisper GPU
 acceleration requires compatible NVIDIA/CUDA; AMD systems can use CPU. Studio
 executes jobs serially to avoid loading multiple speech models at once.
 
+Hindi is much slower than English on a CPU (Devanagari needs several times
+more decoding work per word): a 2-hour Hindi video took about 10× longer than
+real time with `medium`. On an NVIDIA GPU it ran at about 3× faster than real
+time.
+
+**Using an NVIDIA GPU.** faster-whisper needs CUDA 12 cuBLAS and cuDNN 9. If a
+GPU job fails with `cublas64_12.dll is not found`, install them into the
+project's virtual environment only (no system changes; about 1 GB):
+
+```
+.venv\Scripts\python -m pip install "nvidia-cublas-cu12>=12.4,<13" "nvidia-cudnn-cu12>=9.1,<10"
+```
+
+Chopify finds these DLLs by itself (only inside its own processes). Then set
+**Device** to `cuda` in the project settings. With 4 GB of VRAM the `medium`
+model uses about 3 GB at float16 (Chopify's default on GPU). `int8_float16`
+was tested and dropped words on Hindi speech, so it is not used.
+
 ## Captions have missing glyphs or wrong timing
 
 Choose an installed font with the language's glyphs. Review word times in Studio

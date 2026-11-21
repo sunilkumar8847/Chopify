@@ -1080,7 +1080,11 @@ class Handler(BaseHTTPRequestHandler):
                     ],
                 })
             if parts == ["api", "projects"]:
-                return self.send_json({"projects": self.app.list_projects()})
+                items = self.app.list_projects()
+                for item in items:
+                    item["status_label"] = automation.status_label(
+                        item, self.app.busy(item["id"]))
+                return self.send_json({"projects": items})
             if parts == ["api", "overview"]:
                 return self.send_json(self.app.overview())
             if parts == ["api", "logs"]:
@@ -1106,6 +1110,10 @@ class Handler(BaseHTTPRequestHandler):
                 data["busy"] = self.app.busy(parts[2])
                 data["recording_active"] = self.app.jobs.busy(parts[2], "record")
                 data["jobs"] = self.app.jobs.list(parts[2])[-10:]
+                data["status_label"] = automation.status_label(data["project"], data["busy"])
+                data["clip_counts"] = automation.clip_counts(
+                    projects.project_path(self.app.root, parts[2]), data["project"],
+                    data["busy"], selected=len(data["candidates"] or []))
                 return self.send_json(data)
             if parts and parts[0] == "media" and len(parts) >= 3:
                 path = projects.project_path(self.app.root, parts[1]).resolve()
@@ -1241,6 +1249,7 @@ class Handler(BaseHTTPRequestHandler):
                     elif action == "candidates":
                         duration = projects.read_json(path / "transcript.json")["duration"]
                         segments = projects.validate_segments(body["candidates"], duration)
+                        projects.check_lengths(segments, projects.validate_options(state["options"]))
                         projects.atomic_json(path / "segments.json", segments)
                     elif action == "run":
                         self.app.enqueue(project_id, body.get("action", "prepare"), body.get("preview", False), body.get("pick"))

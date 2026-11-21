@@ -58,7 +58,11 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
 # whisper_model None means "the profile's model"; device auto picks the GPU
 # when it works and warns visibly when it falls back to CPU.
 NEW_PROJECT_DEFAULTS = {"profile": "balanced", "subtitles": "auto",
-                        "device": "auto", "whisper_model": None}
+                        "device": "auto", "whisper_model": None,
+                        # YouTube Shorts: vertical 1080x1920, 15-120 s clips.
+                        "aspect": "9:16", "min_len": 15, "max_len": 120}
+# Hard limit for vertical Shorts (YouTube allows 180 s; Chopify keeps 120).
+SHORTS_MAX_SECONDS = 120
 
 
 def digest(value):
@@ -112,6 +116,9 @@ def validate_options(options):
     for key in ("min_len", "max_len"):
         if isinstance(result[key], bool) or not isinstance(result[key], int) or not 1 <= result[key] <= 3600:
             raise ValueError(f"{key} must be an integer from 1 to 3600.")
+    if result["aspect"] == "9:16" and result["max_len"] > SHORTS_MAX_SECONDS:
+        # Hard limit, not a suggestion: Shorts never exceed 120 s.
+        result["max_len"] = SHORTS_MAX_SECONDS
     if result["min_len"] > result["max_len"]:
         raise ValueError("Minimum clip length cannot exceed maximum clip length.")
     if result["max_clips"] is not None and (
@@ -280,6 +287,7 @@ def score_keys(transcript_key, data, options):
                             visual.FEATURE_VERSION])
     selection_options = {key: options[key] for key in (
         "min_score", "max_clips", "llm")}
+    selection_options["hooks"] = score_clips.HOOK_VERSION
     if options.get("highlights"):
         # Judge results are cached separately, so re-selecting is cheap.
         selection_options.update(
@@ -364,6 +372,24 @@ def edit_transcript(path, words):
     state["status"] = "review"
     save_project(path, state)
     return data
+
+
+def length_problem(segment, options):
+    """Why a clip may not be rendered for these options, or None."""
+    hard = boundaries.ceiling(options.get("max_len"), options.get("aspect"))
+    length = float(segment["end"]) - float(segment["start"])
+    if length > hard + 0.05:
+        return (f"Clip is {length:.0f}s; the limit for {options.get('aspect')} is "
+                f"{hard:.0f}s. Shorten it in the clip editor.")
+    return None
+
+
+def check_lengths(segments, options):
+    """Raise when any edited clip is longer than the project's hard limit."""
+    for index, segment in enumerate(segments, 1):
+        problem = length_problem(segment, options)
+        if problem:
+            raise ValueError(f"Clip {index}: {problem}")
 
 
 def validate_segments(segments, duration):
@@ -708,10 +734,15 @@ def _run_project(path, action, preview, pick, resume, progress):
                 stage("transcribe clips")
                 runtime = transcription.Runtime(transcription.plan(options))
                 state.setdefault("transcription", {}).update(refine=runtime.info())
+                def refine_progress(done, total):
+                    state["progress"] = {"stage": "transcribe clips", "done": done,
+                                         "total": total, "detail": f"clip range {done}/{total}"}
+                    save_project(path, state)
                 data, refined = transcription.refine(
                     path, data, [(float(s["start"]) - 2.0, float(s["end"]) + 2.0)
                                  for s in segments],
-                    runtime, save=lambda d: atomic_json(path / "transcript.json", d))
+                    runtime, save=lambda d: atomic_json(path / "transcript.json", d),
+                    progress=refine_progress)
                 runtime.release()
                 stage("render preview" if preview else "render")
             # Captions and SRT use the Roman Hinglish display transcript;
@@ -750,6 +781,12 @@ def _run_project(path, action, preview, pick, resume, progress):
             outputs = []
             for i, segment in enumerate(segments, 1):
                 stage(f"{'preview' if preview else 'render'} {i}/{len(segments)}")
+                too_long = length_problem(segment, options)
+                if too_long:              # never export over the hard limit
+                    print(f"Clip {segment['id']}: {too_long}", flush=True)
+                    render_errors.append({"clip": segment["id"], "error": too_long})
+                    save_project(path, state)
+                    continue
                 render_source = source
                 source_offset = 0.0
                 section_key = None
@@ -763,7 +800,7 @@ def _run_project(path, action, preview, pick, resume, progress):
                 key = digest([segment, data["words"], file_identity(source),
                               options, brand, logo_identity, preview,
                               source_offset, section_key,
-                              hinglish.POLICY_VERSION])
+                              hinglish.POLICY_VERSION, render_clips.RENDER_VERSION])
                 cached = state["renders"].get(key)
                 expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
                 if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
@@ -786,6 +823,22 @@ def _run_project(path, action, preview, pick, resume, progress):
                                 render_source, W, H)
                         except ingest.SectionDownloadTimeout as exc:
                             print(f"Section download stalled: {exc}", flush=True)
+                            problem = ingest.full_download_problem(
+                                path, (state.get("source_meta") or {}).get("estimated_size"))
+                            if problem:
+                                # Never fill the disk with a multi-hour video
+                                # for a few clips: say why and stop here.
+                                message = (f"{exc} Not falling back to the whole "
+                                           f"video: {problem}. The other clips "
+                                           "continue; retry this one later.")
+                                print(message, flush=True)
+                                applog.warning("render.section", message,
+                                               clip=segment["id"])
+                                failed_sections[group_index] = message
+                                render_errors.append({"clip": segment["id"],
+                                                      "error": message})
+                                save_project(path, state)
+                                continue
                             print("Downloading the full source once and "
                                   "rendering from it instead.", flush=True)
                             source = sections.ensure_full_source(
@@ -799,7 +852,7 @@ def _run_project(path, action, preview, pick, resume, progress):
                                 segment, data["words"],
                                 file_identity(source), options, brand,
                                 logo_identity, preview, source_offset,
-                                section_key, hinglish.POLICY_VERSION])
+                                section_key, hinglish.POLICY_VERSION, render_clips.RENDER_VERSION])
                         except (Exception, SystemExit) as exc:
                             failed_sections[group_index] = str(exc)
                             render_errors.append(

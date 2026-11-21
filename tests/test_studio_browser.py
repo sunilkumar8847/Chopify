@@ -114,7 +114,7 @@ def test_find_clips_creates_a_project_and_shows_progress(browser, studio):
     browser.wait("document.querySelector('#job-current').textContent.includes('Transcribing')",
                  timeout=20)
     assert not browser.evaluate("document.querySelector('#job-progress').hidden")
-    browser.wait("document.querySelector('#status').textContent.startsWith('review')", timeout=20)
+    browser.wait("document.querySelector('#status').textContent.startsWith('Ready for review')", timeout=20)
     assert browser.evaluate("document.querySelector('#job-last').textContent") != "Nothing yet"
     batch = browser.api_requests("/api/batch")
     assert len(batch) == 1 and batch[0]["status"] == 201, "one request for three clicks"
@@ -318,7 +318,7 @@ def test_manual_clip_deletion_needs_confirmation_in_the_browser(browser, studio)
     browser.wait("document.querySelector('#notice').textContent.includes('Deleted')", timeout=10)
     assert not (path / "clips" / "002-cd34-other.mp4").exists()
     assert (path / "clips" / "001-ab12-hook.mp4").exists(), "only the confirmed clip"
-    browser.wait("document.querySelectorAll('#outputs video').length === 1", timeout=10)
+    browser.wait("document.querySelectorAll('#outputs [data-file-url]').length === 1", timeout=10)
     assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
 
 
@@ -343,7 +343,98 @@ def test_storage_panel_cleans_up_and_clips_stay_playable(browser, studio, monkey
     assert not (path / "audio.webm").exists() and (path / "clips" / "001-ab12-hook.mp4").exists()
     browser.evaluate(f"selectProject('{pid}')")
     browser.wait("!document.querySelector('#cleaned-note').hidden", timeout=10)
-    src = browser.evaluate("document.querySelector('#outputs video').getAttribute('src')")
+    src = browser.evaluate("document.querySelector('#outputs [data-load-file]').dataset.loadFile")
     assert src == f"/media/{pid}/clips/001-ab12-hook.mp4"
     status = browser.evaluate(f"fetch('{src}').then(r => r.status)", await_promise=True)
     assert status == 200
+
+
+
+# ------------------------------------------------- one player, real status
+
+def _preview_and_export(studio):
+    pid, path = _project_with_clips(studio, names=("001-ab12-hook.mp4",))
+    (path / "previews").mkdir()
+    (path / "previews" / "001-cd34-hook.preview.mp4").write_bytes(b"\0" * 2048)
+    projects.atomic_json(path / "segments.json", [
+        {"start": 10.0, "end": 40.0, "hook": "first", "overall": 9},
+        {"start": 50.0, "end": 80.0, "hook": "second", "overall": 8.5}])
+    projects.atomic_json(path / "transcript.json", {
+        "duration": 600.0, "words": [{"word": " hi", "start": 10, "end": 11}],
+        "render_from_sections": True})
+    projects.update_project(path, lambda s: s.update(
+        status="review", stage="ready for review",
+        source_meta={"render_from_sections": True, "long": True}))
+    return pid, path
+
+
+def test_one_shared_player_for_previews_and_exports(browser, studio):
+    pid, path = _preview_and_export(studio)
+    open_studio(browser, studio)
+    browser.evaluate(f"selectProject('{pid}')")
+    browser.wait("document.querySelectorAll('#outputs [data-load-file]').length === 2", timeout=10)
+    assert browser.evaluate("document.querySelectorAll('video').length") == 1, "only the main player"
+    browser.evaluate("document.querySelector('[data-load-file$=\"preview.mp4\"]').click()")
+    label = browser.evaluate("document.querySelector('#player-label').textContent")
+    assert label.startswith("PREVIEW · 480p draft") and "001-cd34-hook.preview.mp4" in label
+    assert browser.evaluate("document.querySelector('#source-player').getAttribute('src')") ==         f"/media/{pid}/previews/001-cd34-hook.preview.mp4"
+    browser.evaluate("document.querySelector('[data-load-file$=\"clips/001-ab12-hook.mp4\"]').click()")
+    label = browser.evaluate("document.querySelector('#player-label').textContent")
+    assert label == "FINAL EXPORT · 001-ab12-hook.mp4"
+    assert browser.evaluate("document.querySelector('#source-player').getAttribute('src')") ==         f"/media/{pid}/clips/001-ab12-hook.mp4"
+    assert browser.evaluate("document.querySelectorAll('video').length") == 1
+    assert browser.evaluate("document.querySelector('.output-card.playing').dataset.fileUrl") ==         f"/media/{pid}/clips/001-ab12-hook.mp4"
+    # Download / publish / delete stay on the card.
+    card = browser.evaluate("document.querySelector('.output-card.playing').innerHTML")
+    assert "MP4 ↓" in card and "data-delete-clip" in card
+    assert not [c for c in browser.console if c["level"] == "error"]
+
+
+def test_watch_preview_then_rendered_output_switch_in_the_same_player(browser, studio):
+    pid, path = _preview_and_export(studio)
+    def fake_run(self, path_, action, preview, pick):
+        (path_ / "previews" / "002-ef56-second.preview.mp4").write_bytes(b"\0" * 2048)
+        projects.update_project(path_, lambda s: s.update(status="review", stage="preview ready"))
+        return 0
+    import dashboard as dash
+    original = dash.Studio._run
+    dash.Studio._run = fake_run
+    try:
+        open_studio(browser, studio)
+        browser.evaluate(f"selectProject('{pid}')")
+        browser.wait("document.querySelectorAll('[data-play]').length === 2", timeout=10)
+        browser.evaluate("document.querySelector('[data-play=\"1\"]').click()")
+        browser.wait("document.querySelector('#player-label').textContent.includes('002-ef56-second.preview.mp4')",
+                     timeout=20)
+        assert browser.evaluate("document.querySelectorAll('video').length") == 1
+        browser.evaluate("document.querySelector('[data-load-file$=\"clips/001-ab12-hook.mp4\"]').click()")
+        assert browser.evaluate("document.querySelector('#player-label').dataset.kind") == "export"
+    finally:
+        dash.Studio._run = original
+
+
+def test_status_label_and_clip_counts_are_accurate(browser, studio):
+    pid, path = _preview_and_export(studio)
+    projects.update_project(path, lambda s: s.update(
+        status="running", stage="transcribe clips", last_action="render",
+        last_preview=False, last_pick="1,2", render_errors=[{"clip": "002", "error": "x"}]))
+    open_studio(browser, studio)
+    browser.wait(f"document.querySelector('[data-id=\"{pid}\"] small').textContent.includes('Stopped')",
+                 timeout=10)
+    sidebar = browser.evaluate(f"document.querySelector('[data-id=\"{pid}\"] small').textContent")
+    assert sidebar == "Stopped (no job is running; the saved status was stale)", sidebar
+    projects.update_project(path, lambda s: s.update(status="review", stage="ready for review"))
+    browser.evaluate(f"selectProject('{pid}')")
+    browser.wait("!document.querySelector('#clip-counts').hidden", timeout=10)
+    counts = browser.evaluate("document.querySelector('#clip-counts').textContent")
+    assert counts == "2 selected · 1 exported · 1 failed · 1 preview draft(s)", counts
+    assert browser.evaluate("document.querySelector('#status').textContent").startswith("Ready for review")
+
+
+def test_new_project_form_defaults_to_shorts(browser, studio):
+    open_studio(browser, studio)
+    assert browser.evaluate("document.querySelector('#new-aspect').value") == "9:16"
+    click_find_clips(browser)
+    browser.wait("!document.querySelector('#project-view').hidden", timeout=15)
+    saved = studio.app.list_projects()[0]["options"]
+    assert (saved["aspect"], saved["min_len"], saved["max_len"]) == ("9:16", 15, 120)

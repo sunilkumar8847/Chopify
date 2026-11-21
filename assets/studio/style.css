@@ -1602,3 +1602,27 @@ button.danger {
   background: var(--danger, #ffb9a8);
   color: #2b0f08;
 }
+
+.player-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+.player-label[data-kind="preview"] {
+  color: var(--danger, #ffb9a8);
+}
+.player-label[data-kind="export"] {
+  color: var(--accent, #d4ef83);
+}
+.output-card .output-play {
+  width: 100%;
+}
+.output-card.playing {
+  outline: 2px solid var(--accent, #d4ef83);
+}
+
+.clip-counts {
+  display: block;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}

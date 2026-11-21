@@ -451,7 +451,7 @@ async function refreshProjects() {
     ? result.projects
         .map(
           (p) =>
-            `<button class="project-item ${p.id === state.id ? "active" : ""}" data-id="${p.id}"><strong>${escapeHTML(projectName(p.source))}</strong><small>${escapeHTML(p.status)} · ${escapeHTML(p.stage)}</small></button>`,
+            `<button class="project-item ${p.id === state.id ? "active" : ""}" data-id="${p.id}"><strong>${escapeHTML(projectName(p.source))}</strong><small>${escapeHTML(p.status_label || `${p.status} · ${p.stage}`)}</small></button>`,
         )
         .join("")
     : '<p class="muted">Add a recording to begin.</p>';
@@ -492,7 +492,8 @@ function updateStatus(detail) {
       ? ` · ${progress.stage} ${Number(progress.done) || 0}/${total}`
       : "";
   $("#status").textContent =
-    `${detail.project.status} · ${detail.project.stage}${progressText}`;
+    `${detail.status_label || `${detail.project.status} · ${detail.project.stage}`}${progressText}`;
+  renderClipCounts(detail);
   const errors = detail.render_errors || [];
   const error =
     detail.project.error ||
@@ -729,6 +730,12 @@ function renderSelectionSummary(detail) {
         ? ""
         : ` · ${formatDuration(durationLow)}-${formatDuration(durationHigh)}`;
     lines.push(`${passing} clips at ${minScore.toFixed(1)}+${range}${length}`);
+    const limit = Number(selection.max_duration) || null;
+    const rejected = (selection.rejected_too_long || []).length;
+    if (limit)
+      lines.push(
+        `Length limit ${formatDuration(limit)}${rejected ? ` · ${rejected} clip(s) rejected: not self-contained within the limit` : ""}`,
+      );
     const profile =
       CONTENT_PROFILE_LABELS[selection.content_profile] ||
       selection.content_profile;
@@ -773,19 +780,27 @@ function renderDetail() {
   $("#project-source").textContent = p.source;
   const player = $("#source-player");
   const hint = $("#player-hint");
-  if (detail.playable_source) {
+  if (
+    state.previewFile &&
+    !detail.files.some((f) => f.url === state.previewFile.url)
+  )
+    state.previewFile = null; // deleted or replaced
+  if (state.previewFile) {
+    player.hidden = false;
+    hint.hidden = true;
+    if (player.getAttribute("src") !== state.previewFile.url)
+      player.src = state.previewFile.url;
+    setPlayerLabel(state.previewFile);
+  } else if (detail.playable_source) {
     player.hidden = !detail.transcript;
     hint.hidden = !!detail.transcript;
     hint.textContent = "Prepare this project to preview the source.";
     const source = `/media/${p.id}/source`;
     if (detail.transcript && player.getAttribute("src") !== source)
       player.src = source;
-  } else if (state.previewFile) {
-    player.hidden = false;
-    hint.hidden = true;
-    if (player.getAttribute("src") !== state.previewFile.url)
-      player.src = state.previewFile.url;
+    setPlayerLabel(detail.transcript ? { kind: "source" } : null);
   } else {
+    setPlayerLabel(null);
     player.hidden = true;
     hint.hidden = false;
     hint.textContent = detail.transcript
@@ -906,7 +921,12 @@ function renderOutputs(detail) {
             file.kind === "clips"
               ? `<label class="check clip-pick"><input type="checkbox" data-clip-select="${escapeHTML(file.name)}" aria-label="Select ${escapeHTML(file.name)} for deletion"> Select</label>`
               : "";
-          return `<article class="output-card"><video controls preload="none" src="${encodeURI(file.url)}"></video><div class="output-info">${pick}<p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div>${file.kind === "clips" ? publishControl(file.name) : ""}</div></article>`;
+          const playing = state.previewFile?.url === file.url ? " playing" : "";
+          const del =
+            file.kind === "clips"
+              ? `<button type="button" data-delete-clip="${escapeHTML(file.name)}">Delete…</button>`
+              : "";
+          return `<article class="output-card${playing}" data-file-url="${escapeHTML(file.url)}"><button type="button" class="output-play" data-load-file="${escapeHTML(file.url)}">▶ Play in player</button><div class="output-info">${pick}<p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div>${file.kind === "clips" ? publishControl(file.name) : ""}${del}</div></article>`;
         })
         .join("")
     : '<p class="muted">Choose candidates and make a preview or export.</p>';
@@ -1156,6 +1176,7 @@ async function watchCandidate(index) {
   const candidate = state.detail.candidates[index];
   if (state.detail.playable_source) {
     state.previewFile = null;
+    renderDetail();
     await play(candidate.start, candidate.end);
     return;
   }
@@ -1190,14 +1211,33 @@ async function watchCandidate(index) {
   notice("Rendering a 480p preview from a downloaded section…");
   await refreshProjects();
 }
+function setPlayerLabel(file) {
+  const label = $("#player-label");
+  label.hidden = !file;
+  if (!file) return;
+  const kind = file.kind === "previews" ? "preview" : file.kind === "clips" ? "export" : "source";
+  label.dataset.kind = kind;
+  label.textContent =
+    kind === "preview"
+      ? `PREVIEW · 480p draft (not the final export) · ${file.name}`
+      : kind === "export"
+        ? `FINAL EXPORT · ${file.name}`
+        : "SOURCE VIDEO";
+  for (const card of document.querySelectorAll("#outputs [data-file-url]"))
+    card.classList.toggle("playing", card.dataset.fileUrl === file.url);
+}
+// The one shared player: Watch previews and rendered clips load here.
 function loadPreview(file) {
   state.previewFile = file;
+  stopAt = null;
   const player = $("#source-player");
-  player.src = file.url;
+  if (player.getAttribute("src") !== file.url) player.src = file.url;
   player.hidden = false;
   $("#player-hint").hidden = true;
+  setPlayerLabel(file);
   player.currentTime = 0;
   player.play().catch(() => {});
+  updateCaptionOverlay(true);
 }
 $("#source-player").addEventListener("timeupdate", () => {
   if (stopAt !== null && $("#source-player").currentTime >= stopAt) {
@@ -2091,3 +2131,36 @@ $("#delete-all-clips").addEventListener(
     ),
   ),
 );
+
+$("#outputs").addEventListener(
+  "click",
+  safe(async (event) => {
+    const play = event.target.closest("[data-load-file]");
+    if (play) {
+      const file = state.detail.files.find((f) => f.url === play.dataset.loadFile);
+      if (file) {
+        loadPreview(file);
+        $("#source-player").scrollIntoView({ block: "nearest" });
+      }
+      return;
+    }
+    const del = event.target.closest("[data-delete-clip]");
+    if (del) await deleteFromProject([del.dataset.deleteClip]);
+  }),
+);
+
+// Selected vs queued vs rendering vs rendered vs failed, never mixed up.
+function renderClipCounts(detail) {
+  const out = $("#clip-counts");
+  const c = detail.clip_counts;
+  out.hidden = !c;
+  if (!c) return;
+  const selected = state.selected ? state.selected.size : c.selected;
+  const parts = [`${selected ?? 0} selected`];
+  if (c.queued) parts.push(`${c.queued} queued for export`);
+  if (c.rendering) parts.push(`${c.rendering} rendering now`);
+  parts.push(`${c.rendered} exported`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  if (c.previews) parts.push(`${c.previews} preview draft(s)`);
+  out.textContent = parts.join(" · ");
+}

@@ -170,3 +170,54 @@ def test_hindi_words_render_roman_captions_srt_and_metadata(source, tmp_path, mo
     assert not hinglish.has_devanagari(out.name) and "pehli-baar-gta" in out.name
     assert meta["title"].startswith("Pehli baar GTA") and not hinglish.has_devanagari(json.dumps(meta, ensure_ascii=False))
     assert words[0]["word"] == "आज", "the caller's original words are untouched"
+
+
+@pytest.mark.parametrize("aspect,size", [("9:16", (1080, 1920)), ("16:9", (1920, 1080))])
+@pytest.mark.parametrize("framing", ["center", "fit"])
+def test_exports_have_true_dimensions_and_square_pixels(source, tmp_path, aspect, size, framing):
+    """1080x1920 must display as 1080x1920 (no stray sample aspect ratio)."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0}]
+    out = render_clips.render({"id": "001", "start": 0.0, "end": 2.5, "hook": "hook"},
+                              words, source, 640, 360, tmp_path, aspect, out_dir=tmp_path,
+                              framing_mode=framing)
+    video = next(s for s in json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
+        capture_output=True, text=True, check=True).stdout)["streams"]
+        if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == size
+    assert video.get("sample_aspect_ratio", "1:1") in ("1:1", "0:1")
+    duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                     "-of", "csv=p=0", str(out)], capture_output=True, text=True,
+                                    check=True).stdout)
+    assert duration <= 120
+
+
+def test_shorts_captions_sit_inside_the_safe_area():
+    safe = render_clips.SAFE_AREAS["9:16"]
+    margin, side = render_clips.caption_geometry("9:16", 1080, 1920, "bottom", 95)
+    assert margin == round(safe["bottom"] * 1920) and margin >= 0.2 * 1920
+    assert side == round(safe["side"] * 1080) and side > 80
+    assert render_clips.caption_geometry("16:9", 1920, 1080, "bottom", 95) == (95, 80)
+
+
+def test_facecam_layout_exports_a_true_9_16_frame(tmp_path, monkeypatch):
+    """Regression: facecam-on-top exports were 1080x1920 with SAR 1955:1962
+    (shown as 1080x1927)."""
+    src = tmp_path / "game.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=1920x1080:rate=12:duration=3", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(src)], check=True)
+    import framing
+    monkeypatch.setattr(framing, "analyze", lambda *a, **k: {})
+    monkeypatch.setattr(framing, "plan", lambda *a, **k: {
+        "mode": "facecam", "facecam": (0.87, 0.18, 0.11, 0.17)})
+    out = render_clips.render({"id": "001", "start": 0.0, "end": 2.5, "hook": "cam"},
+                              [{"word": "Hi", "start": 0.5, "end": 1.0}], src, 1920, 1080,
+                              tmp_path, "9:16", out_dir=tmp_path, framing_mode="auto")
+    video = next(s for s in json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
+        capture_output=True, text=True, check=True).stdout)["streams"]
+        if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (1080, 1920)
+    assert video.get("sample_aspect_ratio") in ("1:1", None), video.get("sample_aspect_ratio")

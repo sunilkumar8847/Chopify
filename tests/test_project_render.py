@@ -138,6 +138,7 @@ def test_section_stall_falls_back_to_full_source(tmp_path, monkeypatch):
             projects.ingest.SectionDownloadTimeout("stalled")))
     monkeypatch.setattr(projects.sections, "ensure_full_source",
                         lambda *args, **kwargs: full)
+    monkeypatch.setattr(projects.ingest, "full_download_problem", lambda *a: None)
     monkeypatch.setattr(projects.render_clips, "ffprobe_dims",
                         lambda p: (640, 360))
     seen = []
@@ -151,6 +152,29 @@ def test_section_stall_falls_back_to_full_source(tmp_path, monkeypatch):
     assert seen == [(full, 0.0)]
     assert state["status"] == "complete"
     assert state["render_errors"] == []
+
+
+def test_no_whole_video_fallback_without_disk_space(tmp_path, monkeypatch):
+    path = ready_long_project(tmp_path)
+    monkeypatch.setattr(
+        projects.sections, "ensure_section",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            projects.ingest.SectionDownloadTimeout("stalled")))
+    downloads = []
+    monkeypatch.setattr(projects.sections, "ensure_full_source",
+                        lambda *args, **kwargs: downloads.append(1))
+    monkeypatch.setattr(projects.ingest, "full_download_problem",
+                        lambda *a: "the full video needs about 80.0 GB")
+    with pytest.raises(ValueError, match="failed"):
+        projects.run_project(path, action="render")
+    state = projects.read_project(path)
+    assert downloads == [], "never started the multi-hour download"
+    assert "Not falling back to the whole video" in state["render_errors"][0]["error"]
+
+
+def test_section_timeout_grows_with_the_section():
+    assert projects.ingest.section_timeout(0, 30) >= 180
+    assert projects.ingest.section_timeout(1106, 1418) > 312 * 1.3 + 60
 
 
 def test_section_failure_records_error_and_keeps_successes(tmp_path, monkeypatch):

@@ -1089,10 +1089,55 @@ def load_candidates(workdir):
     return data["candidates"], stats
 
 
+# YouTube caption artifacts: "[ __ ]" (bleeped word), ">>" (speaker change).
+_ARTIFACT = re.compile(r"^(?:>+|\[|\]|_+|\[_*\]|\(|\))$")
+# A title must not stop on a word that needs a continuation.
+HOOK_VERSION = 3
+DANGLING = {"some", "any", "be", "able", "been", "than", "into", "every",
+            "and", "or", "but", "so", "the", "a", "an", "to", "of", "your", "my",
+            "his", "her", "their", "our", "its", "with", "for", "in", "on", "at",
+            "from", "because", "that", "if", "is", "are", "was", "it's", "i'm",
+            "you're", "we're", "they're", "gonna", "about", "like", "just", "very"}
+
+
+def _clean_words(text):
+    """Title words from transcript text: no artifacts, filler or stutters."""
+    words = []
+    for raw in str(text or "").split():
+        if _ARTIFACT.match(raw.strip()):
+            continue
+        token = _norm_token(raw)
+        if not token or token in FILLER_TOKENS or set(token) <= {"_"}:
+            continue
+        if words and token == words[-1]:          # "i i was" -> "i was"
+            continue
+        words.append(token)
+        for size in (2, 3):                       # "you know you know" -> "you know"
+            if len(words) >= 2 * size and words[-size:] == words[-2 * size:-size]:
+                del words[-size:]
+    return words
+
+
 def make_hook(text, max_words=7):
-    words = [_norm_token(w) for w in text.split()]
-    words = [w for w in words if w and w not in FILLER_TOKENS]
-    return " ".join(words[:max_words]) or "clip"
+    """A short title made only of the clip's own words.
+
+    Prefers the first complete sentence of 3+ words that fits; otherwise the
+    opening words, never ending on a dangling word ("... and", "it's your").
+    """
+    pieces = re.split(r"(?<=[.!?\u0964\u0965])\s+", str(text or "").strip())
+    for piece in pieces[:4]:
+        words = _clean_words(piece)
+        if 3 <= len(words) <= max_words + 2:
+            return " ".join(_trim_dangling(words[:max_words + 2]))
+    words = _trim_dangling(_clean_words(text)[:max_words])
+    return " ".join(words) or "clip"
+
+
+def _trim_dangling(words):
+    trimmed = list(words)
+    while len(trimmed) > 3 and trimmed[-1] in DANGLING:
+        trimmed.pop()
+    return trimmed
 
 
 def _norm_token(w):
@@ -1696,9 +1741,65 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
                 preferred_len=preferred_len, aspect=aspect,
                 score_window=(lambda a, b: index.score(a, b)[1]) if index else None,
                 make_hook=make_hook)
+    segments, stats = enforce_max_duration(segments, stats, max_len, aspect)
+    refresh_hooks(segments, (transcript or {}).get("words") or [])
     _write_json(workdir / "segments.json", segments)
     _write_json(workdir / "selection.json", stats)
     return segments, mode
+
+
+def refresh_hooks(segments, words):
+    """Title each clip from its own final range of the transcript.
+
+    Only the clip's words are used (nothing invented); caption artifacts,
+    stutters and dangling endings are removed by make_hook. The original
+    title is kept in ``hook_source`` for reference; users can edit titles.
+    """
+    if not words:
+        return segments
+    sentences = sentenceize(words)
+    for segment in segments:
+        start, end = float(segment["start"]), float(segment["end"])
+        inside = [s for s in sentences if s["start"] >= start - 0.5 and s["end"] <= end + 0.5]
+        if not inside:
+            continue
+        hook = make_hook(" ".join(s["text"] for s in inside[:4]))
+        if hook != "clip" and hook != segment.get("hook"):
+            segment.setdefault("hook_source", segment.get("hook"))
+            segment["hook"] = hook
+    return segments
+
+
+def enforce_max_duration(segments, stats, max_len, aspect=None):
+    """Drop clips over the hard limit (9:16: 120 s); never shorten them here.
+
+    Duration refinement already fits clips at sentence boundaries; whatever
+    is still too long, or was marked too long, cannot be self-contained
+    inside the limit and is rejected.
+    """
+    import boundaries
+    hard = boundaries.ceiling(max_len, aspect)
+    kept, rejected = [], []
+    for segment in segments:
+        length = float(segment["end"]) - float(segment["start"])
+        if segment.get("too_long") or length > hard + 0.05:
+            rejected.append({"start": round(float(segment["start"]), 2),
+                             "end": round(float(segment["end"]), 2),
+                             "length": round(float(segment.get("too_long") or length), 1),
+                             "hook": segment.get("hook")})
+            continue
+        kept.append(segment)
+    stats = dict(stats)
+    stats["max_duration"] = hard
+    lengths = [float(s["end"]) - float(s["start"]) for s in kept]
+    if lengths:                       # what the kept clips really are
+        stats["duration_min"], stats["duration_max"] = round(min(lengths), 2), round(max(lengths), 2)
+    if rejected:
+        stats["rejected_too_long"] = rejected
+        stats["passing"] = max(0, int(stats.get("passing", len(segments)) or 0) - len(rejected))
+        print(f"Rejected {len(rejected)} clip(s) that cannot be self-contained within "
+              f"{hard:.0f}s.", flush=True)
+    return kept, stats
 
 
 def _select_supplied(workdir, records, stats, min_score, max_clips,

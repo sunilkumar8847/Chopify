@@ -256,7 +256,7 @@ def test_preferred_length_sets_the_fit_target():
     assert result[0]["end"] - result[0]["start"] <= 30 * boundaries.SOFT_MAX_FACTOR + 1
 
 
-@pytest.mark.parametrize("aspect,limit", [("9:16", 180), ("16:9", 200)])
+@pytest.mark.parametrize("aspect,limit", [("9:16", 120), ("16:9", 200)])
 def test_extensions_never_break_the_ceiling(aspect, limit):
     lines = [f"Background sentence {i} that sets up the scene slowly." for i in range(60)]
     lines.append("He finally said yes.")
@@ -272,7 +272,7 @@ def test_extensions_never_break_the_ceiling(aspect, limit):
 
 
 def test_ceiling_values():
-    assert boundaries.ceiling(300, "9:16") == 180
+    assert boundaries.ceiling(300, "9:16") == 120
     assert boundaries.ceiling(120, "9:16") == 120
     assert boundaries.ceiling(300, "16:9") == 300
 
@@ -432,3 +432,28 @@ def test_cli_duration_mode_flag_updates_an_existing_project(tmp_path, monkeypatc
                                       "--no-preflight", "--action", "prepare"])
     chopify.main()
     assert projects.read_project(path)["options"]["duration_mode"] == "fixed"
+
+
+# ------------------------------------------------------- strict 120 s limit
+
+def test_a_clip_that_cannot_fit_is_rejected_not_cut():
+    # One long unbroken thought: no sentence boundary gives a shorter clip.
+    words = [{"word": f" w{i}", "start": i * 0.5, "end": i * 0.5 + 0.4} for i in range(400)]
+    words[-1]["word"] = " end."
+    sents = score_clips.sentenceize(words, gap=5)
+    assert len(sents) == 1 and sents[0]["end"] - sents[0]["start"] > 120
+    original = {"start": 0.0, "end": sents[0]["end"], "hook": "x", "overall": 9}
+    result, _ = refine([original], sents, max_len=120, aspect="9:16", band=(30, 90))
+    assert result[0]["too_long"] > 120
+    kept, stats = score_clips.enforce_max_duration(result, {"passing": 1}, 120, "9:16")
+    assert kept == [] and stats["rejected_too_long"][0]["length"] > 120
+    assert stats["max_duration"] == 120 and stats["passing"] == 0
+
+
+def test_enforced_limit_keeps_clips_within_it():
+    segs = [{"start": 0, "end": 119.9}, {"start": 200, "end": 330}, {"start": 400, "end": 430}]
+    kept, stats = score_clips.enforce_max_duration(segs, {}, 120, "9:16")
+    assert [s["start"] for s in kept] == [0, 400]
+    assert all(s["end"] - s["start"] <= 120 for s in kept)
+    kept, _ = score_clips.enforce_max_duration(segs, {}, 300, "16:9")
+    assert len(kept) == 3, "landscape keeps its own max_len"

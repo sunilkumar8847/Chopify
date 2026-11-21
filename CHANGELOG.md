@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Shorts output and Studio corrections
+- New projects default to Shorts: 9:16 (1080x1920), clips 15-120 s. For 9:16
+  the 120 s limit is hard: settings above it are saved as 120, duration
+  refinement rejects a clip that cannot be self-contained within the limit
+  instead of cutting it, selection drops anything longer, and preview/export
+  refuse an over-long edited clip. Landscape 16:9 stays available with its own
+  maximum. The selection summary shows the real length range and the limit.
+- Exports have square pixels (setsar=1); facecam-on-top 9:16 clips were
+  1080x1920 with SAR 1955:1962 and displayed as 1080x1927. Render cache key
+  versioned so a re-export writes a new, correct file.
+- One shared player: Watch previews and rendered clips load into the main
+  player with a PREVIEW / FINAL EXPORT label; clip cards no longer embed
+  their own players (Play, download, publish and delete stay on the card).
+- Titles come from each clip's own final range: YouTube caption artifacts
+  ("[ __ ]", ">>"), stutters, repeated phrases and dangling endings removed.
+- Status shows what is really running ("Export: Whisper word timing for 6
+  clips", "Export: rendering clip 2 of 6"); a saved running status with no
+  live job is shown as stale. Project page counts selected, queued,
+  rendering, exported and failed clips separately.
+- Section downloads get time in proportion to their length (they ran at
+  ~1.3 s per second and every section over ~2 minutes "stalled"); the
+  whole-video fallback no longer starts without room to download and merge it.
+
 ### Storage
 - Storage management (docs/STORAGE.md): final clips are kept forever and
   never deleted automatically. Supporting files (downloads, previews,

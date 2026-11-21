@@ -232,7 +232,7 @@ def splice(data, start, end, segments, words, fingerprint):
     return data
 
 
-def refine(path, data, ranges, runtime, save, log=print):
+def refine(path, data, ranges, runtime, save, log=print, progress=None):
     """Whisper word timing for every range that will be rendered.
 
     Caption transcripts only; Whisper transcripts are returned unchanged.
@@ -246,7 +246,9 @@ def refine(path, data, ranges, runtime, save, log=print):
         raise ValueError("The discovery audio is missing; Find clips again before rendering.")
     duration = float(data.get("duration") or 0)
     todo = missing_ranges(data, ranges, runtime.fingerprint())
-    for start, end in todo:
+    for number, (start, end) in enumerate(todo, 1):
+        if progress:
+            progress(number - 1, len(todo))
         lo, hi = max(0.0, start - REFINE_PAD), min(duration or end + REFINE_PAD, end + REFINE_PAD)
         with applog.step("transcribe.refine", f"Whisper for {start:.0f}-{end:.0f}s"):
             segments, words, _ = dt.transcribe_range(

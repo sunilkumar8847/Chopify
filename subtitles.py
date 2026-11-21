@@ -195,8 +195,13 @@ def parse_cues(text):
     return _finish(words)
 
 
+# "[ __ ]" is YouTube's mask for a bleeped word, ">>" a speaker change.
+_ARTIFACT = re.compile(r"^(?:>+|\[|\]|_+|\[_*\])$")
+
+
 def _finish(words):
-    words = [w for w in words if w["word"] and not _MARKER.match(w["word"])]
+    words = [w for w in words if w["word"] and not _MARKER.match(w["word"])
+             and not _ARTIFACT.match(w["word"])]
     words.sort(key=lambda w: w["start"])
     for a, b in zip(words, words[1:]):          # no overlaps between words
         if a["end"] > b["start"]:

@@ -35,6 +35,9 @@ ASPECTS = {
     "1:1":  (1080, 1080, 82, 120),
 }
 DEFAULT_ASPECT = "16:9"
+# Part of every render cache key: bump when output pixels change
+# (2: square pixels, setsar=1).
+RENDER_VERSION = 2
 
 # Phase 4: caption safe areas as fractions of the output frame (see
 # caption_geometry). 16:9 keeps its original fixed margins.
@@ -971,9 +974,11 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         width = max(20, round(brand["logo_width"] * tw / 1920))
         inputs += ["-i", brand["logo"]]
         graph += (f"[captioned];[1:v]scale={width}:-1[logo];"
-                  "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+                  "[captioned][logo]overlay=W-w-24:24:eof_action=repeat,setsar=1[v]")
     else:
-        graph += "[v]"
+        # Square pixels: scaled crops can leave a non-1:1 sample aspect ratio
+        # (1080x1920 then displayed as 1080x1927, not a true 9:16).
+        graph += ",setsar=1[v]"
     quality = PREVIEW_ENCODE if preview else FINAL_ENCODE
     encoder = pick_encoder()
     head = ["ffmpeg", "-y"] + inputs + ["-t", f"{dur:.3f}",

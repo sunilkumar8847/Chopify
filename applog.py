@@ -189,8 +189,13 @@ def step(operation, message="", **fields):
 def read(limit=100, project_id=None, request_id=None, min_level="DEBUG", days=2):
     """Newest-first entries from the last ``days`` daily files."""
     folder = log_dir()
-    files = sorted(folder.glob("chopify-*.jsonl"), key=lambda p: p.stat().st_mtime,
-                   reverse=True)[:days * 3]
+    def order(p):                   # chopify-DAY[.N].jsonl -> (DAY, N)
+        parts = p.stem.split(".")
+        index = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        return parts[0], index
+    files = sorted(folder.glob("chopify-*.jsonl"), key=order, reverse=True)
+    recent = sorted({order(p)[0] for p in files}, reverse=True)[:days]
+    files = [p for p in files if order(p)[0] in recent]
     entries = []
     floor = LEVELS.get(min_level, 10)
     for path in files:

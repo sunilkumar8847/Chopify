@@ -32,7 +32,7 @@ import re
 VERSION = 1
 MODES = ("auto", "fixed")
 DEFAULT_MODE = "auto"
-SHORTS_MAX = 180.0                # YouTube Shorts ceiling
+SHORTS_MAX = 120.0                # Chopify's Shorts limit (YouTube allows 180)
 SOFT_MAX_FACTOR = 1.5             # content band upper limit x this = "too long"
 LEAD_PAD = 0.25                   # air before the first word (s)
 TAIL_PAD = 0.60                   # air after the last word (s), keeps the beat
@@ -409,8 +409,13 @@ def refine_segments(segments, sentences, *, mode=DEFAULT_MODE, duration=None,
                 start = max(start, other_end)
             if other_start >= original[1] - 1e-6:
                 end = min(end, other_start)
-        if end - start > hard:                     # padding never breaks the ceiling
-            end = start + hard
+        content = (float(sentences[a]["start"]), float(sentences[b]["end"]))
+        if content[1] - content[0] > hard + 1e-6:
+            # No self-contained version fits: reject it, never cut mid-thought.
+            segment["too_long"] = round(content[1] - content[0], 2)
+        elif end - start > hard:                   # only padding is trimmed
+            end = max(content[1], start + hard)
+            start = max(start, end - hard)
         segment.update(start=start, end=end, duration=round(end - start, 2))
         if make_hook and (a, b) != found:
             segment["hook"] = make_hook(sentences[a].get("text", "")) or segment.get("hook")

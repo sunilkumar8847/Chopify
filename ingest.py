@@ -21,6 +21,14 @@ AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".wav", ".aac", ".flac", ".webm"}
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
 MIN_FREE_BYTES = 500 * 1024**2
 SECTION_TIMEOUT = 180
+# Ranged downloads run at about 1.3 s per second of video (measured on
+# YouTube DASH, 1080p), so the limit grows with the section: a flat 180 s
+# made every section longer than ~2 minutes "stall".
+SECTION_SECONDS_FACTOR = 4.0
+
+
+def section_timeout(start, end):
+    return max(SECTION_TIMEOUT, 90 + SECTION_SECONDS_FACTOR * max(0.0, float(end) - float(start)))
 FULL_TIMEOUT = 60 * 60
 
 
@@ -429,8 +437,9 @@ def _download(url, out_path, fmt, runner=None, timeout=None, extra=()):
 
 
 def download_section(url, start, end, out_path, quality=1080, runner=None,
-                     timeout=SECTION_TIMEOUT):
+                     timeout=None):
     """Download one accurate video section with a bounded wait."""
+    timeout = timeout or section_timeout(start, end)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for stale in (out_path, out_path.with_suffix(out_path.suffix + ".part")):
@@ -480,6 +489,23 @@ def download_full(url, out_path, quality=1080, runner=None,
     else:
         fmt = "worst"
     return _download(url, out_path, fmt, runner=runner, timeout=timeout)
+
+
+def full_download_problem(path, estimated_bytes):
+    """Why a whole-source fallback download must not start, or None.
+
+    Merging needs the streams and the merged file at once, so twice the
+    estimate must fit, with 2 GB to spare.
+    """
+    free = shutil.disk_usage(str(path)).free
+    if not estimated_bytes:
+        return ("the full video's size is unknown, so it is not downloaded "
+                f"automatically ({free / 1024**3:.1f} GB free)")
+    need = 2 * float(estimated_bytes) + 2 * 1024**3
+    if free < need:
+        return (f"the full video needs about {need / 1024**3:.1f} GB to download "
+                f"and merge but only {free / 1024**3:.1f} GB is free")
+    return None
 
 
 def check_disk(path, required_bytes):

@@ -181,8 +181,8 @@ def main():
                     help="print the caption style preset names and exit")
     ap.add_argument("url", nargs="?", help="local video path or yt-dlp-supported URL")
     ap.add_argument("--workdir", default="work", help="intermediate files dir")
-    ap.add_argument("--aspect", default="16:9", choices=["16:9", "9:16", "1:1"],
-                    help="output aspect ratio (default 16:9)")
+    ap.add_argument("--aspect", default=None, choices=["16:9", "9:16", "1:1"],
+                    help="output aspect ratio (default 9:16 Shorts; 16:9 for landscape)")
     ap.add_argument("--out", default=None,
                     help="output directory (default ./clips, or $CHOPIFY_OUT)")
     ap.add_argument("--style", default="default",
@@ -228,8 +228,10 @@ def main():
                     help="soft preferred length, e.g. 45s, 2m, 1m30s")
     ap.add_argument("--max-clips", type=int, default=None,
                     help="optional safety cap; default all passing clips")
-    ap.add_argument("--min-len", type=int, default=15, help="min clip seconds")
-    ap.add_argument("--max-len", type=int, default=300, help="max clip seconds")
+    ap.add_argument("--min-len", type=int, default=None,
+                    help="min clip seconds (default 15)")
+    ap.add_argument("--max-len", type=int, default=None,
+                    help="max clip seconds (default 120; 9:16 never exceeds 120)")
     ap.add_argument("--no-input", action="store_true",
                     help="never prompt; use flags and defaults")
     ap.add_argument("--explain", action="store_true",

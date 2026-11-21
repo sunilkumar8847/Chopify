@@ -547,3 +547,60 @@ def activity(state, stages):
             label += f", {info['detail']})" if info.get("detail") else ")"
         result["current"] = label
     return result
+
+
+def status_label(state, busy):
+    """What is really happening, in words, for the sidebar and header.
+
+    Export and preview jobs run Whisper on their clips first; that step is
+    labelled as part of the export/preview so it never looks like the whole
+    video is being transcribed again. A saved "running" status without a live
+    job is shown as stale instead of as running.
+    """
+    status = str(state.get("status") or "")
+    stage = str(state.get("stage") or "")
+    job = "Preview" if state.get("last_preview") else "Export"
+    pick = [p for p in str(state.get("last_pick") or "").split(",") if p]
+    progress = state.get("progress") or {}
+    if status in ("queued", "running") and not busy:
+        return "Stopped (no job is running; the saved status was stale)"
+    if status == "queued":
+        return f"Queued: {job.lower() if state.get('last_action') == 'render' else 'find clips'}"
+    if status == "running":
+        if stage == "transcribe clips":
+            done, total = progress.get("done"), progress.get("total")
+            count = f" {done}/{total}" if total else ""
+            return f"{job}: Whisper word timing for {len(pick) or 'the'} clip(s){count}"
+        match = re.match(r"(render|preview)(?: (\d+)/(\d+))?", stage)
+        if match:
+            if match.group(2):
+                return f"{job}: rendering clip {match.group(2)} of {match.group(3)}"
+            return f"{job}: preparing"
+        return {"source": "Find clips: getting the video",
+                "transcribe": "Find clips: transcribing",
+                "transcribe captions": "Find clips: checking YouTube captions",
+                "discover": "Find clips: finding moments",
+                "select": "Find clips: AI judging"}.get(stage, f"Running: {stage}")
+    return {"review": "Ready for review", "complete": "Exported",
+            "failed": f"Failed at {stage}", "cancelled": "Cancelled",
+            "interrupted": "Interrupted"}.get(status, status or "New")
+
+
+def clip_counts(path, state, busy, selected=None):
+    """Selected, queued, rendering, rendered and failed clip counts."""
+    path = Path(path)
+    stage = str(state.get("stage") or "")
+    rendering = bool(busy and state.get("last_action") in ("render", "all")
+                     and not state.get("last_preview"))
+    pick = [p for p in str(state.get("last_pick") or "").split(",") if p]
+    match = re.match(r"render (\d+)/(\d+)", stage)
+    current = int(match.group(1)) if (rendering and match) else 0
+    total = int(match.group(2)) if (rendering and match) else len(pick)
+    return {
+        "selected": selected,
+        "queued": max(0, total - current) if rendering else 0,
+        "rendering": 1 if current else 0,
+        "rendered": len(list((path / "clips").glob("*.mp4"))) if (path / "clips").is_dir() else 0,
+        "failed": len(state.get("render_errors") or []),
+        "previews": len(list((path / "previews").glob("*.mp4"))) if (path / "previews").is_dir() else 0,
+    }

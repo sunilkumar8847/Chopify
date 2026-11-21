@@ -1550,3 +1550,15 @@ button[aria-busy="true"] {
   cursor: progress;
   opacity: 0.75;
 }
+
+.processing-mode {
+  margin: 0.25rem 0 0;
+}
+.processing-mode.warn,
+.job-warning {
+  color: var(--warn, #b45309);
+}
+.job-warning {
+  margin: 0.25rem 0 0;
+  font-size: 0.9rem;
+}

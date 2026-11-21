@@ -117,9 +117,52 @@ function safe(handler) {
     }
   };
 }
+function newProjectOptions() {
+  return {
+    aspect: $("#new-aspect").value,
+    style: $("#new-style").value,
+    profile: $("#new-profile").value,
+    device: $("#new-device").value,
+    subtitles: $("#new-subtitles").value,
+    whisper_model: $("#new-model").value || null,
+  };
+}
+
+// What the create form will do, before anything runs: profile, model,
+// captions and the device that will really be used.
+function showProcessingMode() {
+  const out = $("#processing-mode");
+  if (!out || !state.config) return;
+  const profiles = state.config.profiles || {};
+  const profile = profiles[$("#new-profile").value] || {};
+  const model = $("#new-model").value || profile.model || "medium";
+  const gpu = state.config.gpu || {};
+  const device = $("#new-device").value;
+  let where;
+  let warn = false;
+  if (device === "cpu") where = "CPU (chosen)";
+  else if (gpu.usable) where = "GPU";
+  else if (device === "cuda") {
+    where = `GPU requested, but ${gpu.reason}: the job will stop with an error`;
+    warn = true;
+  } else {
+    where = `CPU, because ${gpu.reason} (several times slower)`;
+    warn = true;
+  }
+  const captionsOn = $("#new-subtitles").value === "auto" && profile.captions !== "off";
+  const how = captionsOn
+    ? `${profile.speed}. If the captions are missing or fail the checks, Whisper ${model} transcribes the whole video.`
+    : `Whisper ${model} transcribes the whole video.`;
+  out.textContent = `${profile.label || "Profile"} on ${where}: ${how}`;
+  out.classList.toggle("warn", warn);
+}
+for (const id of ["#new-profile", "#new-device", "#new-subtitles", "#new-model"])
+  $(id)?.addEventListener("change", showProcessingMode);
+
 async function config() {
   state.config = await api("/api/config");
   state.token = state.config.token;
+  showProcessingMode();
   updatePresets();
   updateBrands();
   renderCaptionGallery();
@@ -466,7 +509,10 @@ function updateStatus(detail) {
   $("#job-advice").textContent = diagnosis?.advice ? `What to do: ${diagnosis.advice}` : "";
   renderActivity(detail);
   $("#log").textContent = detail.log || "No job has run yet.";
-  state.busy = detail.busy;
+  // Keep polling while the saved status still says work is pending, even if
+  // the job lane reported idle at that instant (the status catches up).
+  state.busy =
+    detail.busy || ["queued", "running"].includes(detail.project?.status);
   $("#cancel-job").hidden = !detail.busy;
   renderRecording(detail);
   for (const selector of [
@@ -509,6 +555,30 @@ function renderActivity(detail) {
   const fraction = activity.progress?.fraction;
   bar.hidden = !(detail.busy && typeof fraction === "number");
   if (!bar.hidden) bar.value = Math.round(fraction * 100);
+  renderTranscription(detail.project.transcription);
+}
+// Which device, profile and transcript source this project really used.
+function renderTranscription(info) {
+  const box = $("#job-mode-box");
+  const warning = $("#job-warning");
+  box.hidden = !info;
+  warning.hidden = true;
+  if (!info) return;
+  const device = info.device === "cuda" ? "GPU" : "CPU";
+  const source = String(info.source || "whisper").startsWith("youtube")
+    ? `YouTube ${info.source.replace("youtube_", "")} captions (${info.track}, ${Math.round((info.agreement || 0) * 100)}% agreement with Whisper) + Whisper ${info.model} for exported clips`
+    : `Whisper ${info.model}`;
+  const speed = info.realtime_factor
+    ? ` · ${info.seconds < 90 ? `${info.seconds}s` : `${Math.round(info.seconds / 60)} min`} (${info.realtime_factor}× video length)`
+    : info.estimate?.whisper_minutes && !String(info.source).startsWith("youtube")
+      ? ` · estimated ${info.estimate.whisper_minutes} min`
+      : "";
+  $("#job-mode").textContent = `${info.profile || "accurate"} · ${source} on ${device} (${info.compute})${speed}`;
+  const notes = [info.warning, info.captions_refused && `Captions not used: ${info.captions_refused}.`].filter(Boolean);
+  if (notes.length) {
+    warning.textContent = notes.join(" ");
+    warning.hidden = false;
+  }
 }
 function formatBytes(value) {
   const bytes = Number(value) || 0;
@@ -908,11 +978,7 @@ async function findClips(form) {
     `Submitting ${sources.length} source${sources.length === 1 ? "" : "s"} to Studio…`,
   );
   try {
-    const options = {
-      aspect: $("#new-aspect").value,
-      whisper_model: $("#new-model").value,
-      style: $("#new-style").value,
-    };
+    const options = newProjectOptions();
     const result = await api("/api/batch", { sources, options });
     const skipped = result.duplicates || [];
     const failed = result.errors || [];
@@ -970,11 +1036,7 @@ $("#detect-record-start").addEventListener(
     const project = await api("/api/record", {
       source: state.detected.source,
       settings: recordingSettings($("#detect-record")),
-      options: {
-        aspect: $("#new-aspect").value,
-        whisper_model: $("#new-model").value,
-        style: $("#new-style").value,
-      },
+      options: newProjectOptions(),
     });
     $("#detect-result").hidden = true;
     $("#sources").value = "";

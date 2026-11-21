@@ -1,6 +1,7 @@
 """Shared, resumable local project pipeline for CLI and dashboard."""
 import hashlib
 import json
+import subprocess
 import math
 import re
 import threading
@@ -22,6 +23,8 @@ import visual
 import ingest
 import sections
 import branding
+import subtitles
+import transcription
 from captions import update_transcript
 
 DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
@@ -45,7 +48,17 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    # Output policy: generated text is Roman-script Hinglish.
                    # True also asks the LLM to polish transliterated spelling
                    # (validated word by word; rules alone are the default).
-                   "hinglish_ai": False}
+                   "hinglish_ai": False,
+                   # Speed profile and subtitle-first transcripts. These
+                   # defaults keep saved projects exactly as they were;
+                   # new projects get NEW_PROJECT_DEFAULTS.
+                   "profile": "accurate", "subtitles": "off"}
+
+# What a project created today starts with (unless the caller chose).
+# whisper_model None means "the profile's model"; device auto picks the GPU
+# when it works and warns visibly when it falls back to CPU.
+NEW_PROJECT_DEFAULTS = {"profile": "balanced", "subtitles": "auto",
+                        "device": "auto", "whisper_model": None}
 
 
 def digest(value):
@@ -117,6 +130,16 @@ def validate_options(options):
         result["preferred_len"] = int(preferred) if preferred.is_integer() else preferred
     if result["device"] not in {"cpu", "cuda", "auto"}:
         raise ValueError("Device must be cpu, cuda or auto.")
+    if result["profile"] is None:
+        result["profile"] = DEFAULT_OPTIONS["profile"]
+    if result["profile"] not in transcription.PROFILES:
+        raise ValueError("profile must be accurate, balanced or fast.")
+    if result["subtitles"] is None:
+        result["subtitles"] = DEFAULT_OPTIONS["subtitles"]
+    if result["subtitles"] not in transcription.SUBTITLE_MODES:
+        raise ValueError("subtitles must be auto or off.")
+    if result["whisper_model"] == "":
+        result["whisper_model"] = None
     if result["search"] and result["semantic"]:
         raise ValueError("Choose keyword search or semantic search, not both.")
     centers = result["centers"]
@@ -245,6 +268,13 @@ def score_keys(transcript_key, data, options):
     discovery_options = {key: options[key] for key in (
         "search", "semantic", "embed_model", "min_len", "max_len",
         "preferred_len")}
+    if transcription.needs_refine(data):
+        # Caption transcripts change where clips are refined with Whisper;
+        # that must not re-run discovery. Their content is the caption
+        # track (digest) plus any manual edits.
+        data = {**{k: v for k, v in data.items()
+                   if k not in ("words", "segments", "refined")},
+                "edits": [r for r in data.get("refined") or [] if r.get("by") == "edit"]}
     discovery_key = digest([transcript_key, data, discovery_options,
                             evidence.EVIDENCE_VERSION,
                             visual.FEATURE_VERSION])
@@ -280,7 +310,9 @@ def create_project(root, source, options):
 def init_project(path, source, options, project_id=None):
     if not isinstance(source, str) or not source.strip() or len(source) > 8000:
         raise ValueError("Provide a video path or URL.")
-    options = validate_options(options)
+    options = validate_options({**NEW_PROJECT_DEFAULTS, **{
+        k: v for k, v in (options or {}).items()
+        if not (k in NEW_PROJECT_DEFAULTS and v is None)}})
     source = source.strip()
     if Path(source).expanduser().is_file():
         source = str(Path(source).expanduser().resolve())
@@ -321,7 +353,8 @@ def update_project(path, mutate):
 
 def edit_transcript(path, words):
     path = Path(path)
-    data = update_transcript(read_json(path / "transcript.json"), words)
+    old = read_json(path / "transcript.json")
+    data = transcription.lock_edits(old, update_transcript(old, words))
     atomic_json(path / "transcript.json", data)
     state = read_project(path)
     # Preserve candidate time ranges for manual editing; changed words invalidate renders.
@@ -395,6 +428,23 @@ def _run_project(path, action, preview, pick, resume, progress):
         state["progress"] = {"stage": "transcribe", "done": int(done),
                              "total": int(total),
                              "detail": f"chunk {done}/{total}"}
+        save_project(path, state)
+
+    last_report = {"at": 0.0}
+
+    def audio_progress(done, total):
+        # Seconds of audio transcribed; saved at most every 5 seconds.
+        now = time.time()
+        if now - last_report["at"] < 5 and done < total:
+            return
+        last_report["at"] = now
+        started = (state.get("transcription") or {}).get("started") or now
+        detail = f"{_clock(done)} of {_clock(total)} transcribed"
+        if done > 0 and now - started > 20:
+            left = (now - started) / done * (total - done)
+            detail += f" · about {max(1, round(left / 60))} min left"
+        state["progress"] = {"stage": "transcribe", "done": int(done),
+                             "total": int(total), "detail": detail}
         save_project(path, state)
 
     try:
@@ -478,10 +528,12 @@ def _run_project(path, action, preview, pick, resume, progress):
                 state["source_meta"] = meta
 
             stage("transcribe")
+            settings = transcription.plan(options)
             transcript_key = digest([
                 dt.TRANSCRIPT_VERSION, file_identity(source),
-                options["whisper_model"], options["device"], bool(long),
-                media_kind, bool(render_from_sections), source_input])
+                settings["model"], options["device"], bool(long),
+                media_kind, bool(render_from_sections), source_input,
+                *transcription.cache_key_parts(settings)])
             transcript_path = path / "transcript.json"
             if (not resume or state["cache"].get("transcript") != transcript_key
                     or not transcript_path.exists()):
@@ -505,16 +557,55 @@ def _run_project(path, action, preview, pick, resume, progress):
                         render_from_sections=render_from_sections,
                         identity=source_identity)
                 else:
-                    dt.transcribe(
-                        source, path, options["whisper_model"],
-                        options["device"],
-                        "int8" if options["device"] == "cpu" else "default",
-                        duration=duration if long else None,
-                        chunked=bool(long), source=source_input,
-                        media_kind=media_kind,
-                        render_from_sections=render_from_sections,
-                        identity=source_identity,
-                        progress=transcribe_progress)
+                    runtime = transcription.Runtime(settings)
+                    state["transcription"] = {
+                        **runtime.info(), "source": "whisper", "started": time.time(),
+                        "estimate": transcription.estimate(
+                            settings, duration, runtime.device == "cuda", is_url)}
+                    save_project(path, state)
+                    captions, refused = None, None
+                    if is_url and settings["captions"] != "off":
+                        stage("transcribe captions")
+                        captions, refused = caption_transcript(
+                            path, state, source, source_input, meta, duration,
+                            runtime)
+                        stage("transcribe")
+                    if captions is not None:
+                        captions.update({
+                            "video": str(source), "transcript_version": dt.TRANSCRIPT_VERSION,
+                            "chunked": False, "chunks": 0, "media_kind": media_kind,
+                            "render_from_sections": bool(render_from_sections),
+                            "source": str(source_input), "source_duration": captions["duration"],
+                            "source_identity": source_identity})
+                        atomic_json(transcript_path, captions)
+                        state["transcription"].update(
+                            source=captions["transcript_source"],
+                            track=captions["captions"]["track"],
+                            agreement=captions["captions"]["verification"]["similarity"])
+                    else:
+                        if refused:
+                            print(f"Captions not used: {refused}. Transcribing with "
+                                  "Whisper instead.", flush=True)
+                            applog.warning("captions.refused", refused)
+                            state["transcription"]["captions_refused"] = refused
+                        runtime.release()          # dt.transcribe loads its own
+                        dt.transcribe(
+                            source, path, settings["model"], runtime.device,
+                            runtime.compute,
+                            duration=duration if long else None,
+                            chunked=bool(long), source=source_input,
+                            media_kind=media_kind,
+                            render_from_sections=render_from_sections,
+                            identity=source_identity,
+                            progress=transcribe_progress,
+                            decode=settings["decode"],
+                            audio_progress=audio_progress)
+                    runtime.release()
+                    elapsed = time.time() - state["transcription"]["started"]
+                    state["transcription"]["seconds"] = round(elapsed, 1)
+                    if duration:
+                        state["transcription"]["realtime_factor"] = round(
+                            elapsed / float(duration), 3)
                     if (is_url and long and media_kind == "audio"
                             and not read_json(transcript_path).get("words")):
                         visual = ingest.download_visual_discovery(
@@ -533,9 +624,10 @@ def _run_project(path, action, preview, pick, resume, progress):
                         state["cache"]["source_media"] = digest(source_identity)
                         transcript_key = digest([
                             dt.TRANSCRIPT_VERSION, source_identity,
-                            options["whisper_model"], options["device"],
+                            settings["model"], options["device"],
                             bool(long), media_kind,
-                            bool(render_from_sections), source_input])
+                            bool(render_from_sections), source_input,
+                            *transcription.cache_key_parts(settings)])
                         print("No speech; switching discovery to the "
                               "low-resolution visual video.", flush=True)
                 state["cache"]["transcript"] = transcript_key
@@ -607,6 +699,18 @@ def _run_project(path, action, preview, pick, resume, progress):
             # Assign stable IDs before subset selection so names do not shift.
             segments = [{**s, "id": f"{i:03}"} for i, s in enumerate(segments, 1)]
             segments = score_clips.pick_segments(segments, pick)
+            if transcription.should_refine(data, transcription.plan(options)):
+                # Caption transcripts: exact Whisper word timing for just the
+                # clips being rendered (cached per range).
+                stage("transcribe clips")
+                runtime = transcription.Runtime(transcription.plan(options))
+                state.setdefault("transcription", {}).update(refine=runtime.info())
+                data, refined = transcription.refine(
+                    path, data, [(float(s["start"]) - 2.0, float(s["end"]) + 2.0)
+                                 for s in segments],
+                    runtime, save=lambda d: atomic_json(path / "transcript.json", d))
+                runtime.release()
+                stage("render preview" if preview else "render")
             # Captions and SRT use the Roman Hinglish display transcript;
             # transcript.json keeps Whisper's original words.
             caption_words = hinglish.display_words(
@@ -743,6 +847,25 @@ def _run_project(path, action, preview, pick, resume, progress):
         state.update(status="failed", error=str(exc), stage=state.get("stage", "failed"))
         save_project(path, state)
         raise
+
+
+def _clock(seconds):
+    seconds = int(max(0, seconds))
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}:{rest // 60:02}:{rest % 60:02}" if hours else f"{rest // 60}:{rest % 60:02}"
+
+
+def caption_transcript(path, state, source, url, meta, duration, runtime):
+    """Caption transcript dict for a URL, or (None, reason why not)."""
+    tracks = meta.get("captions")
+    if not tracks:
+        return None, "YouTube reported no caption tracks for this video"
+    try:
+        local = float(ingest.probe_source(str(source)).get("duration") or 0) or None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        local = None
+    return transcription.caption_transcript(
+        path, url, source, local or duration, tracks, runtime)
 
 
 def run_batch(sources, root, options, runner=None, **kwargs):

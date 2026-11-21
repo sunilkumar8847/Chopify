@@ -234,8 +234,14 @@ def main():
                     help="never prompt; use flags and defaults")
     ap.add_argument("--explain", action="store_true",
                     help="print score parts and reasons")
-    ap.add_argument("--whisper-model", default="medium",
-                    help="faster-whisper size: tiny/base/small/medium/large-v3")
+    ap.add_argument("--whisper-model", default=None,
+                    help="faster-whisper size: tiny/base/small/medium/large-v3 "
+                         "(default: the profile's model)")
+    ap.add_argument("--profile", choices=["accurate", "balanced", "fast"], default=None,
+                    help="transcription speed profile for new projects (default balanced)")
+    ap.add_argument("--subtitles", choices=["auto", "off"], default=None,
+                    help="use a URL's own YouTube captions for finding clips when they "
+                         "pass quality checks (default auto for new projects)")
     ap.add_argument("--no-preflight", action="store_true",
                     help="skip the environment check (ffmpeg, packages, ...)")
     ap.add_argument("--project", help="resume an existing project directory")
@@ -251,7 +257,9 @@ def main():
     ap.add_argument("--layout", choices=["single", "split"], default="single")
     ap.add_argument("--centers", type=float, nargs=2, default=[0.25, 0.75],
                     help="horizontal speaker centers from 0 to 1 for split-screen")
-    ap.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu")
+    ap.add_argument("--device", choices=["cpu", "cuda", "auto"], default=None,
+                    help="auto (default for new projects) uses the GPU when it works "
+                         "and warns when it falls back to CPU")
     render_clips.add_caption_arguments(ap)
     args = ap.parse_args()
     if args.list_styles:

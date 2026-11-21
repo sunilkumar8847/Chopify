@@ -268,11 +268,32 @@
               </select></label
             >
             <label
+              >Speed profile<select id="new-profile">
+                <option value="balanced" selected>Balanced (recommended)</option>
+                <option value="accurate">Accurate (Whisper on the whole video)</option>
+                <option value="fast">Fast (YouTube word timing)</option>
+              </select></label
+            >
+            <label
+              >Compute<select id="new-device">
+                <option value="auto" selected>Auto (GPU when available)</option>
+                <option value="cuda">GPU (CUDA) only</option>
+                <option value="cpu">CPU only</option>
+              </select></label
+            >
+            <label
+              >YouTube captions<select id="new-subtitles">
+                <option value="auto" selected>Use when reliable</option>
+                <option value="off">Off (Whisper only)</option>
+              </select></label
+            >
+            <label
               >Transcription model<select id="new-model">
+                <option value="" selected>Profile default</option>
                 <option>tiny</option>
                 <option>base</option>
                 <option>small</option>
-                <option selected>medium</option>
+                <option>medium</option>
                 <option>large-v3</option>
               </select></label
             >
@@ -294,6 +315,7 @@
               </select></label
             >
           </div>
+          <p id="processing-mode" class="hint processing-mode" aria-live="polite"></p>
           <div class="form-bottom">
             <span class="hint"
               >First run downloads the speech model.<br />Clip jobs run one at a
@@ -337,7 +359,12 @@
             <span class="eyebrow">LAST DONE</span>
             <span id="job-last">Nothing yet</span>
           </div>
+          <div id="job-mode-box" hidden>
+            <span class="eyebrow">TRANSCRIPTION</span>
+            <span id="job-mode"></span>
+          </div>
         </section>
+        <p id="job-warning" class="job-warning" role="status" hidden></p>
         <p id="job-error" role="alert" hidden></p>
         <p id="job-advice" class="hint job-advice" hidden></p>
         <section id="recording-panel" class="panel recording-panel" hidden>
@@ -599,7 +626,19 @@
               <details>
                 <summary>Transcription & scoring</summary>
                 <label
+                  >Speed profile<select name="profile">
+                    <option value="balanced">Balanced</option>
+                    <option value="accurate">Accurate</option>
+                    <option value="fast">Fast</option>
+                  </select></label
+                ><label
+                  >YouTube captions<select name="subtitles">
+                    <option value="auto">Use when reliable</option>
+                    <option value="off">Off (Whisper only)</option>
+                  </select></label
+                ><label
                   >Whisper model<select name="whisper_model">
+                    <option value="">Profile default</option>
                     <option>tiny</option>
                     <option>base</option>
                     <option>small</option>
@@ -608,9 +647,9 @@
                   </select></label
                 ><label
                   >Compute<select name="device">
-                    <option>cpu</option>
-                    <option>cuda</option>
-                    <option>auto</option>
+                    <option value="auto">Auto (GPU when available)</option>
+                    <option value="cuda">GPU (CUDA) only</option>
+                    <option value="cpu">CPU only</option>
                   </select></label
                 ><label
                   >AI judge model (Ollama, optional)<input

@@ -227,3 +227,49 @@ def test_worker_that_cannot_start_is_reported(tmp_path, monkeypatch):
         assert any(e["operation"] == "worker.start" and e.get("traceback") for e in logged)
     finally:
         app.close()
+
+
+# ------------------------------------------------- speed profile and device
+
+def test_create_form_sends_profile_device_and_captions(browser, studio, monkeypatch):
+    monkeypatch.setattr(studio.app, "_gpu", {"usable": False,
+                                             "reason": "no NVIDIA GPU or CUDA driver was found"})
+    open_studio(browser, studio)
+    mode = browser.evaluate("document.querySelector('#processing-mode').textContent")
+    assert "Balanced" in mode and "CPU, because no NVIDIA GPU" in mode
+    assert browser.evaluate("document.querySelector('#processing-mode').classList.contains('warn')")
+    browser.evaluate("document.querySelector('#new-profile').value = 'fast';"
+                     "document.querySelector('#new-profile').dispatchEvent(new Event('change'))")
+    assert "word timing" in browser.evaluate("document.querySelector('#processing-mode').textContent")
+    click_find_clips(browser)
+    browser.wait("!document.querySelector('#project-view').hidden", timeout=15)
+    sent = json.loads(browser.api_requests("/api/batch")[0]["body"])["options"]
+    assert (sent["profile"], sent["device"], sent["subtitles"], sent["whisper_model"]) == \
+        ("fast", "auto", "auto", None)
+    saved = studio.app.list_projects()[0]["options"]
+    assert (saved["profile"], saved["device"], saved["subtitles"]) == ("fast", "auto", "auto")
+
+
+def test_project_view_shows_the_real_device_and_cpu_warning(browser, studio, monkeypatch):
+    def fake_run(self, path, action, preview, pick):
+        projects.update_project(path, lambda s: s.update(
+            status="review", stage="ready for review", progress={},
+            transcription={"profile": "balanced", "model": "medium", "device": "cpu",
+                           "compute": "int8", "source": "whisper",
+                           "warning": "Transcribing on CPU: no NVIDIA GPU or CUDA driver "
+                                      "was found. This is several times slower than the GPU.",
+                           "captions_refused": "YouTube automatic captions (hi-orig) refused: "
+                                               "the captions do not match the speech (agreement 20%)",
+                           "seconds": 120.0, "realtime_factor": 0.2}))
+        return 0
+    monkeypatch.setattr(dashboard.Studio, "_run", fake_run)
+    open_studio(browser, studio)
+    click_find_clips(browser)
+    try:
+        browser.wait("document.querySelector('#job-mode').textContent.includes('CPU')", timeout=15)
+    except TimeoutError:
+        raise AssertionError((browser.exceptions, browser.evaluate("document.querySelector('#job-mode').textContent"), browser.evaluate("document.querySelector('#status').textContent")))
+    mode = browser.evaluate("document.querySelector('#job-mode').textContent")
+    assert "Whisper medium on CPU (int8)" in mode and "0.2× video length" in mode
+    warning = browser.evaluate("document.querySelector('#job-warning').textContent")
+    assert "Transcribing on CPU" in warning and "Captions not used" in warning

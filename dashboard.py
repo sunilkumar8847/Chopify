@@ -16,6 +16,8 @@ import webbrowser
 
 import applog
 import automation
+import download_and_transcribe as dt
+import transcription
 import branding
 import ingest
 import jobs
@@ -172,6 +174,7 @@ class Studio:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "brands").mkdir(exist_ok=True)
         self.token = secrets.token_urlsafe(32)
+        self._gpu = None
         # Separate lanes: recording, processing (one at a time) and uploads.
         self.jobs = jobs.JobManager()
         self.lock = threading.RLock()
@@ -320,6 +323,14 @@ class Studio:
                      bool(state.get("last_preview")), state.get("last_pick"),
                      reason="retry")
         return {"ok": True}
+
+    def gpu_status(self):
+        """Whether Whisper can use the GPU here (checked once per Studio run)."""
+        if self._gpu is None:
+            usable, reason = dt.cuda_status()
+            self._gpu = {"usable": usable, "reason": reason}
+            applog.info("studio.gpu", f"GPU transcription {'available' if usable else 'unavailable'}: {reason}")
+        return self._gpu
 
     def overview(self):
         """Everything the automation dashboard shows, in one payload."""
@@ -883,6 +894,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({
                     "token": self.app.token,
                     "defaults": projects.DEFAULT_OPTIONS,
+                    "new_defaults": projects.NEW_PROJECT_DEFAULTS,
+                    "profiles": transcription.PROFILES,
+                    "gpu": self.app.gpu_status(),
                     "brands": brands,
                     "caption_brands": caption_brands,
                     "caption_presets": render_clips.CAPTION_STYLES,

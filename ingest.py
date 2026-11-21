@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import subtitles
+
 LONG_SECONDS = 2 * 60 * 60
 LONG_BYTES = 8 * 1024**3
 AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".wav", ".aac", ".flac", ".webm"}
@@ -292,6 +294,8 @@ def _probe_url(url, run=None):
         "live_status": live_status_from(data),
         "is_live": live_status_from(data) == "is_live",
         "release_timestamp": data.get("release_timestamp"),
+        # Caption inventory for subtitle-first transcripts (no download).
+        "captions": subtitles.track_list(data),
     }
 
 

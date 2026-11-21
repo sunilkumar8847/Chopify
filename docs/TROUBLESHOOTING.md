@@ -73,9 +73,23 @@ Use `--search` for keyword matching without Ollama.
 
 ## Transcription is slow or CUDA fails
 
-Try `--whisper-model small` or `tiny` and `--device cpu`. faster-whisper GPU
-acceleration requires compatible NVIDIA/CUDA; AMD systems can use CPU. Studio
-executes jobs serially to avoid loading multiple speech models at once.
+First check the project's **TRANSCRIPTION** line in Studio: it shows the
+device really used (GPU or CPU), the profile and whether YouTube captions
+were used. A yellow warning means it fell back to the CPU, or that the
+captions were refused (with the reason).
+
+* Projects made before the speed profiles keep their saved Compute setting;
+  older Studio versions saved `cpu`. Set **Compute** to Auto and **Speed
+  profile** to Balanced in the project settings, then Find clips again.
+* Balanced (the default) uses a URL's own YouTube captions after checking
+  them and only transcribes exported clips: about a minute instead of most of
+  an hour. See [PERFORMANCE.md](PERFORMANCE.md) for measurements.
+* Smaller models and beam 1 are not offered as speed-ups: they lost Hindi
+  speech in testing.
+
+faster-whisper GPU acceleration requires compatible NVIDIA/CUDA; AMD systems
+use the CPU. Studio executes jobs serially to avoid loading multiple speech
+models at once.
 
 Hindi is much slower than English on a CPU (Devanagari needs several times
 more decoding work per word): a 2-hour Hindi video took about 10× longer than
@@ -90,8 +104,8 @@ project's virtual environment only (no system changes; about 1 GB):
 .venv\Scripts\python -m pip install "nvidia-cublas-cu12>=12.4,<13" "nvidia-cudnn-cu12>=9.1,<10"
 ```
 
-Chopify finds these DLLs by itself (only inside its own processes). Then set
-**Device** to `cuda` in the project settings. With 4 GB of VRAM the `medium`
+Chopify finds these DLLs by itself (only inside its own processes). New projects use
+the GPU automatically (Compute: Auto). With 4 GB of VRAM the `medium`
 model uses about 3 GB at float16 (Chopify's default on GPU). `int8_float16`
 was tested and dropped words on Hindi speech, so it is not used.
 

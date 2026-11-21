@@ -519,6 +519,9 @@ def progress(state):
 STAGE_LABELS = {"source": "Getting the video", "transcribe": "Transcribing speech",
                 "discover": "Finding candidate moments", "select": "AI judging and choosing clips",
                 "render": "Rendering clips", "upload": "Uploading"}
+# Named steps inside a stage.
+STEP_LABELS = {"transcribe captions": "Checking YouTube captions against the speech",
+               "transcribe clips": "Transcribing the exported clips with Whisper"}
 
 
 def activity(state, stages):
@@ -532,7 +535,8 @@ def activity(state, stages):
     if status == "queued":
         result["current"] = "Waiting for its turn in the queue"
     elif status in ("running", "recording", "finalizing"):
-        label = STAGE_LABELS.get(current) or str(state.get("stage") or "Working")
+        label = (STEP_LABELS.get(str(state.get("stage") or ""))
+                 or STAGE_LABELS.get(current) or str(state.get("stage") or "Working"))
         info = result["progress"]
         if info and info.get("fraction") is not None and info.get("stage") == current:
             label += f" ({round(info['fraction'] * 100)}%"

@@ -118,10 +118,12 @@ def test_long_url_audio_without_speech_switches_to_visual_discovery(
     assert data["video"] == str(visual)
     assert data["source"] == source
     assert data["media_kind"] == "video"
+    settings = projects.transcription.plan(state["options"])
     assert state["cache"]["transcript"] == projects.digest([
         projects.dt.TRANSCRIPT_VERSION, projects.file_identity(visual),
-        state["options"]["whisper_model"], state["options"]["device"],
-        True, "video", True, source])
+        settings["model"], state["options"]["device"],
+        True, "video", True, source,
+        *projects.transcription.cache_key_parts(settings)])
 
 
 def test_long_local_file_transcribes_chunks_without_downloading(

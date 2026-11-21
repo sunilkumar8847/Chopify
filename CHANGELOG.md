@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- Subtitle-first transcription: a URL's own YouTube captions (manual first,
+  then YouTube's speech track, spoken language only, never translations)
+  drive clip discovery after quality checks and a Whisper spot check of
+  three 30-second windows (text, language and timeline). Only exported clips
+  are transcribed with Whisper. A 62-minute video: speech-to-text 68 min ->
+  40 s, Find clips 70 min -> 3 min. Refused captions fall back to Whisper
+  with the reason shown. See docs/PERFORMANCE.md.
+- Speed profiles Accurate / Balanced (default) / Fast. All keep Whisper
+  medium, beam 5: small, beam 1 and batched decoding lost Hindi speech.
+- New projects use Compute: Auto (GPU when it works); a CPU fallback is shown
+  as a warning, and an explicit GPU request that cannot work fails clearly.
+  Studio shows the planned mode before starting and the real device after.
+- Whisper chunks are reused only with matching model/decoding/precision;
+  a checkpoint is saved every 2 audio minutes inside a chunk; progress shows
+  minutes transcribed and time left. The Whisper model is released before
+  the AI judge needs the GPU.
+
+### Fixed
+- Studio's Find clips form never sent a device, so every new project was
+  transcribed on the CPU.
+- The project page could stay on "queued" when a job finished very quickly.
+
 ### Added
 - Phase 6 automation dashboard (`#dashboard`): per-project stage pipeline with
   progress, job and upload queues, pause/resume of processing and uploads,

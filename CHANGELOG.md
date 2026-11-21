@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Storage
+- Storage management (docs/STORAGE.md): final clips are kept forever and
+  never deleted automatically. Supporting files (downloads, previews,
+  transcripts, caption/AI caches, intermediate files) are cleaned up only
+  after every final clip of a project is uploaded, YouTube reports each
+  video processed (videos.list), the clips pass media checks and nothing is
+  running. Journaled, resumable and idempotent; failed, processing or
+  unverifiable uploads keep everything. Automatic for new projects only.
+- Manual deletion of final clips with a confirmation listing every file,
+  its size and upload state.
+- Dashboard Storage panel: usage by category and project, reclaimable space,
+  clean up one or all eligible projects, delete clips.
+
 ### Performance
 - Subtitle-first transcription: a URL's own YouTube captions (manual first,
   then YouTube's speech track, spoken language only, never translations)

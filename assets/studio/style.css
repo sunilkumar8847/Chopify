@@ -1562,3 +1562,43 @@ button[aria-busy="true"] {
   margin: 0.25rem 0 0;
   font-size: 0.9rem;
 }
+
+.storage-actions {
+  margin: 0.5rem 0;
+}
+.storage-table small {
+  opacity: 0.7;
+}
+.clip-pick {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+.delete-dialog {
+  max-width: min(40rem, calc(100vw - 32px));
+  background: var(--panel, #1b1f1a);
+  color: inherit;
+  border: 1px solid var(--line, #444);
+  border-radius: 12px;
+}
+.delete-dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+.delete-list {
+  max-height: 40vh;
+  overflow: auto;
+  padding-left: 1.2rem;
+}
+.delete-list .not-uploaded strong {
+  color: var(--danger, #ffb9a8);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+button.danger {
+  background: var(--danger, #ffb9a8);
+  color: #2b0f08;
+}

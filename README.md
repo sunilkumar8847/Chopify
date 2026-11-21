@@ -259,7 +259,7 @@ python chopify.py "podcast.mp4" --semantic "turning failure into a lesson"
 
 The embedding model runs on `127.0.0.1:11434`. Sentence embeddings are cached per transcript/model. Use `--embed-model MODEL` for another compatible local embedding model. Semantic search ranks matches by similarity; it does not guarantee that the topic is present. Missing models produce setup instructions rather than a cloud fallback.
 
-For optional LLM-based selection, download a local chat model separately and pass `--llm MODEL`. If it is unavailable, selection falls back to the heuristic. The GPU backend for faster-whisper is CUDA/NVIDIA; CPU transcription works without an NVIDIA GPU. `--device cpu|cuda|auto` controls transcription (new projects: `auto`). `--profile accurate|balanced|fast` and `--subtitles auto|off` choose between whole-video Whisper and checked YouTube captions; see [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+For optional LLM-based selection, download a local chat model separately and pass `--llm MODEL`. If it is unavailable, selection falls back to the heuristic. The GPU backend for faster-whisper is CUDA/NVIDIA; CPU transcription works without an NVIDIA GPU. `--device cpu|cuda|auto` controls transcription (new projects: `auto`). `--profile accurate|balanced|fast` and `--subtitles auto|off` choose between whole-video Whisper and checked YouTube captions; see [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Supporting files are removed after verified uploads while final clips are kept; see [docs/STORAGE.md](docs/STORAGE.md).
 
 ## Is Chopify an alternative to Opus Clip?
 

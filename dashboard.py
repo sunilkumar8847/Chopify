@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ import jobs
 import live
 import projects
 import publish_meta
+import storage
 import render_clips
 import youtube_auth
 import youtube_upload
@@ -188,6 +190,7 @@ class Studio:
         self.youtube = youtube_auth.YouTubeAccount()
         self.uploads = youtube_upload.UploadQueue(self.youtube)
         self.upload_timer = None
+        self.storage_timer = None
         # Phase 6: automation settings, event history, channel monitoring.
         self.settings = automation.Settings(self.root)
         self.events = automation.EventLog(self.root)
@@ -234,6 +237,7 @@ class Studio:
                                     project_id, level="error")
             self.recover = []
         self._schedule_monitor()
+        self._schedule_storage(30)       # also resumes interrupted cleanups
 
     def find_duplicate(self, source):
         """The existing project for this video, or None."""
@@ -460,6 +464,156 @@ class Studio:
         finally:
             self.monitor_busy.release()
 
+    # ---------------------------------------------------------- storage
+    STORAGE_RECHECK = 15 * 60        # YouTube processing usually takes minutes
+
+    def storage_plan(self, project_id, verify=False):
+        """Cleanup plan for one project; ``verify`` asks YouTube first."""
+        path = projects.project_path(self.root, project_id)
+        state = projects.read_project(path)
+        entries = self.uploads.entries()
+        verify_error = None
+        if verify:
+            todo = [e["id"] for e in storage.clip_uploads(path, project_id, entries).values()
+                    if e.get("state") == "uploaded" and e.get("youtube_status") != "processed"]
+            if todo:
+                try:
+                    self.uploads.verify_uploaded(todo)
+                except (youtube_upload.UploadError, youtube_auth.AuthError) as exc:
+                    verify_error = str(exc)
+                entries = self.uploads.entries()
+        result = storage.plan(path, state, entries, busy=self.busy(project_id))
+        if verify_error:
+            result["eligible"] = False
+            result["reasons"].append(f"upload status is uncertain: {verify_error}")
+        result.update(title=(state.get("source_meta") or {}).get("title") or state.get("source"),
+                      status=state.get("status"), last_cleanup=storage.last_cleanup(path),
+                      auto_cleanup=bool((state.get("storage") or {}).get("auto_cleanup")))
+        return result
+
+    def storage_overview(self):
+        """Disk use by category and per project (no YouTube calls)."""
+        rows, totals = [], {c: 0 for c in storage.CATEGORIES}
+        for state in self.list_projects():
+            try:
+                plan = self.storage_plan(state["id"])
+            except (OSError, ValueError, KeyError):
+                continue
+            for key, value in plan["totals"].items():
+                totals[key] += value
+            row = {k: plan[k] for k in (
+                "project_id", "title", "status", "eligible", "reasons", "bytes",
+                "totals", "total_bytes", "clips", "last_cleanup", "auto_cleanup", "outside")}
+            row.update(delete_count=len(plan["delete"]), keep_count=len(plan["keep"]))
+            rows.append(row)
+        logs = applog.log_dir()
+        log_bytes = (sum(p.stat().st_size for p in logs.glob("*") if p.is_file())
+                     if logs.is_dir() else 0)
+        try:
+            free = shutil.disk_usage(self.root).free
+        except OSError:
+            free = None
+        return {"projects": rows, "totals": totals, "labels": storage.LABELS,
+                "logs_bytes": log_bytes, "disk_free": free,
+                "chopify_bytes": sum(totals.values()) + log_bytes,
+                "reclaimable_bytes": sum(r["bytes"] for r in rows if r["eligible"]),
+                "eligible": [r["project_id"] for r in rows if r["eligible"]]}
+
+    def cleanup_project(self, project_id, reason="manual"):
+        """Verify uploads with YouTube, then delete supporting files."""
+        with self.lock:
+            path = projects.project_path(self.root, project_id)
+            if storage.pending(path):              # resume an interrupted run
+                summary = storage.run_cleanup(path, {}, reason="resumed")
+            else:
+                plan = self.storage_plan(project_id, verify=True)
+                if not plan["eligible"]:
+                    applog.info("storage.cleanup", "Cleanup skipped: not eligible",
+                                project_id=project_id, reason=reason,
+                                reasons=plan["reasons"][:10])
+                    return {"project_id": project_id, "cleaned": False,
+                            "reasons": plan["reasons"]}
+                summary = storage.run_cleanup(path, plan, reason=reason)
+
+            def record(s):
+                s.setdefault("storage", {}).update(
+                    cleaned_at=summary["finished"],
+                    files_deleted=summary["total_files_deleted"],
+                    bytes_freed=summary["total_bytes_freed"])
+            projects.update_project(path, record)
+            self.events.add("storage", f"Cleaned up {summary['files_deleted']} supporting "
+                            f"files ({summary['bytes_freed'] / 1024**2:.1f} MB); "
+                            "final clips kept.", project_id)
+            return {"project_id": project_id, "cleaned": True, **summary}
+
+    def cleanup_all(self, reason="manual"):
+        results = []
+        for row in self.storage_overview()["projects"]:
+            path = projects.project_path(self.root, row["project_id"])
+            if row["eligible"] or storage.pending(path):
+                results.append(self.cleanup_project(row["project_id"], reason))
+        cleaned = [r for r in results if r.get("cleaned")]
+        return {"results": results, "projects_cleaned": len(cleaned),
+                "files_deleted": sum(r["files_deleted"] for r in cleaned),
+                "bytes_freed": sum(r["bytes_freed"] for r in cleaned)}
+
+    def auto_cleanup(self):
+        """Clean new projects whose clips are all uploaded and processed.
+
+        Only projects created with automatic cleanup on (new projects; never
+        existing ones, which need explicit approval). Waits while an upload
+        is unverified or YouTube is still processing it.
+        """
+        waiting = False
+        for state in self.list_projects():
+            path = projects.project_path(self.root, state["id"])
+            if storage.pending(path):
+                self.cleanup_project(state["id"], "resumed")
+                continue
+            info = state.get("storage") or {}
+            if not info.get("auto_cleanup") or info.get("cleaned_at"):
+                continue
+            entries = storage.clip_uploads(path, state["id"], self.uploads.entries())
+            if not entries or not all(e.get("state") == "uploaded" for e in entries.values()):
+                continue
+            result = self.cleanup_project(state["id"], "automatic after verified upload")
+            if not result["cleaned"]:
+                waiting = True
+        if waiting:
+            self._schedule_storage()
+        return waiting
+
+    def _schedule_storage(self, delay=None):
+        with self.lock:
+            if self.closing:
+                return
+            if self.storage_timer is not None:
+                self.storage_timer.cancel()
+            self.storage_timer = threading.Timer(delay or self.STORAGE_RECHECK,
+                                                 self._storage_tick)
+            self.storage_timer.daemon = True
+            self.storage_timer.start()
+
+    def _storage_tick(self):
+        try:
+            self.auto_cleanup()
+        except Exception as exc:                 # never kill the timer thread
+            applog.error("storage.cleanup", "Automatic cleanup check failed", exc=exc)
+            self._schedule_storage()
+
+    def delete_clips(self, project_id, names, confirm=False, confirmed=None):
+        with self.lock:
+            if self.busy(project_id):
+                raise ValueError("Wait for this project's current job to finish.")
+            path = projects.project_path(self.root, project_id)
+            result = storage.delete_clips(path, project_id, names, self.uploads.entries(),
+                                          confirm=confirm, confirmed_files=confirmed)
+            if result.get("deleted"):
+                self.events.add("storage", f"Deleted {len(names)} final clip(s) "
+                                f"({result['bytes_freed'] / 1024**2:.1f} MB) on request.",
+                                project_id)
+            return result
+
     # ---------------------------------------------------------- YouTube
     UPLOAD_JOB = "youtube-uploads"
 
@@ -480,6 +634,9 @@ class Studio:
             self.uploads.process()
         finally:
             self._schedule_uploads()
+            # A finished upload can make its project eligible once YouTube
+            # has processed it: check soon, then every 15 minutes.
+            self._schedule_storage(60)
 
     def _schedule_uploads(self):
         wake = self.uploads.next_wakeup()
@@ -554,6 +711,10 @@ class Studio:
             if not after_recording and self.jobs.busy(project_id, "record"):
                 raise ValueError("Stop the recording before finding clips.")
             state = projects.read_project(path)
+            if action == "render" and (state.get("storage") or {}).get("cleaned_at"):
+                raise ValueError("This project's supporting files were cleaned up after its "
+                                 "clips were uploaded, so it cannot export or preview again. "
+                                 "The final clips are kept. Find clips again to start over.")
             rec = state.get("recording")
             if (not after_recording and isinstance(rec, dict)
                     and rec.get("state") != "recorded"
@@ -779,6 +940,8 @@ class Studio:
             self.closing = True
             if self.upload_timer is not None:
                 self.upload_timer.cancel()
+            if self.storage_timer is not None:
+                self.storage_timer.cancel()
             if self.monitor_timer is not None:
                 self.monitor_timer.cancel()
             # Recordings stop now and are marked interrupted (parts are kept).
@@ -878,6 +1041,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Use the 127.0.0.1 Studio address."}, 403)
         try:
             parts = unquote(urlsplit(self.path).path).strip("/").split("/")
+            if parts == ["api", "storage"]:
+                return self.send_json(self.app.storage_overview())
+            if len(parts) == 4 and parts[:2] == ["api", "storage"] and parts[3] == "plan":
+                plan = self.app.storage_plan(parts[2])
+                return self.send_json({k: v for k, v in plan.items() if k not in {"totals"}})
             if parts == ["api", "config"]:
                 brands = sorted(p.stem for p in (self.app.root / "brands").glob("*.json"))
                 caption_brands = {}
@@ -979,6 +1147,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(detect_source(body.get("source")))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
+            if parts == ["api", "storage", "cleanup"]:
+                project_id = body.get("project_id")
+                applog.info("storage.request", "Cleanup requested in Studio",
+                            project_id=project_id, scope="project" if project_id else "all")
+                if project_id:
+                    if not isinstance(project_id, str):
+                        raise ValueError("project_id must be text.")
+                    return self.send_json(self.app.cleanup_project(project_id))
+                return self.send_json(self.app.cleanup_all())
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "delete-clips":
+                files = body.get("files")
+                if not isinstance(files, list) or not files or len(files) > 500:
+                    raise ValueError("Choose the clips to delete.")
+                confirm = body.get("confirm", False)
+                if not isinstance(confirm, bool):
+                    raise ValueError("confirm must be true or false.")
+                applog.info("storage.request", "Clip deletion " + (
+                    "confirmed" if confirm else "previewed") + " in Studio",
+                    project_id=parts[2], clips=len(files))
+                return self.send_json(self.app.delete_clips(
+                    parts[2], files, confirm=confirm, confirmed=body.get("confirmed")))
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "retry":
                 return self.send_json(self.app.retry(parts[2]))
             if parts[:2] == ["api", "youtube"] or parts[:2] == ["api", "uploads"] or (

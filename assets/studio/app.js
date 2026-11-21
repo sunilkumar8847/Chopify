@@ -884,6 +884,12 @@ function renderOutputs(detail) {
   const videos = detail.files.filter((f) => f.name.endsWith(".mp4"));
   $("#output-count").textContent = `${videos.length} CLIPS`;
   $("#legacy-captions").hidden = !(detail.legacy_captions || []).length;
+  const finals = videos.filter((f) => f.kind === "clips");
+  $("#clip-tools").hidden = !finals.length;
+  const cleaned = detail.project.storage?.cleaned_at;
+  $("#cleaned-note").hidden = !cleaned;
+  if (cleaned)
+    $("#cleaned-note").textContent = `Supporting files were cleaned up after upload (${formatSize(detail.project.storage.bytes_freed)} freed). The final clips below are kept; Find clips again to make new ones.`;
   $("#outputs").className = videos.length ? "output-grid" : "";
   $("#outputs").innerHTML = videos.length
     ? videos
@@ -896,7 +902,11 @@ function renderOutputs(detail) {
                   f.name,
                 ),
             );
-          return `<article class="output-card"><video controls preload="none" src="${encodeURI(file.url)}"></video><div class="output-info"><p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div>${file.kind === "clips" ? publishControl(file.name) : ""}</div></article>`;
+          const pick =
+            file.kind === "clips"
+              ? `<label class="check clip-pick"><input type="checkbox" data-clip-select="${escapeHTML(file.name)}" aria-label="Select ${escapeHTML(file.name)} for deletion"> Select</label>`
+              : "";
+          return `<article class="output-card"><video controls preload="none" src="${encodeURI(file.url)}"></video><div class="output-info">${pick}<p>${escapeHTML(file.kind === "previews" ? "DRAFT · " : "EXPORT · ")}${escapeHTML(stem)}</p><div class="output-links"><a href="${encodeURI(file.url)}" download>MP4 ↓</a>${related.map((f) => `<a href="${encodeURI(f.url)}" download>${f.name.endsWith(".srt") ? "SRT" : f.name.endsWith(".png") ? "POSTER" : "METADATA"} ↓</a>`).join("")}</div>${file.kind === "clips" ? publishControl(file.name) : ""}</div></article>`;
         })
         .join("")
     : '<p class="muted">Choose candidates and make a preview or export.</p>';
@@ -1818,6 +1828,9 @@ function updateDashBadge(data) {
 }
 async function loadOverview() {
   renderOverview(await api("/api/overview"));
+  await loadStorage().catch((error) =>
+    showStorageResult(`Storage information unavailable: ${error.message}`, true),
+  );
 }
 async function showDashboard() {
   if (location.hash !== "#dashboard") history.replaceState(null, "", "#dashboard");
@@ -1933,3 +1946,148 @@ setInterval(async () => {
     dashPolling = false;
   }
 }, 3000);
+
+// ------------------------------------------------------------- storage
+function formatSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}
+function uploadBadge(state) {
+  return state === "uploaded" ? "UPLOADED" : "NOT UPLOADED";
+}
+async function loadStorage() {
+  const data = await api("/api/storage", undefined, { timeout: 60000 });
+  state.storage = data;
+  const t = data.totals;
+  const cards = [
+    ["Used by Chopify", data.chopify_bytes],
+    ["Final clips (kept)", t.final_clips],
+    ["Source media", t.source_media],
+    ["Temporary + previews", t.temporary + t.previews],
+    ["Transcripts + AI caches", t.transcripts_ai],
+    ["Safe to reclaim now", data.reclaimable_bytes],
+    ["Free on this drive", data.disk_free],
+  ];
+  $("#storage-cards").innerHTML = cards
+    .map(
+      ([label, value]) =>
+        `<div class="dash-card"><span>${escapeHTML(label)}</span><strong>${value == null ? "–" : formatSize(value)}</strong></div>`,
+    )
+    .join("");
+  $("#storage-clean-all").disabled = !data.eligible.length;
+  $("#storage-rows").innerHTML = data.projects
+    .map((row) => {
+      const supporting = row.total_bytes - row.totals.final_clips - row.totals.kept_metadata;
+      const cleaned = row.last_cleanup?.state === "done";
+      const status = row.eligible
+        ? "Eligible"
+        : cleaned && !supporting
+          ? `Cleaned (${formatSize(row.last_cleanup.total_bytes_freed)} freed)`
+          : escapeHTML(row.reasons[0] || "Not eligible");
+      return `<tr data-storage="${escapeHTML(row.project_id)}"><td>${escapeHTML(String(row.title || row.project_id).slice(0, 60))}<br><small>${escapeHTML(row.project_id)}${row.auto_cleanup ? " · auto" : ""}</small></td><td>${formatSize(row.total_bytes)}</td><td>${row.clips.length} · ${formatSize(row.totals.final_clips)}</td><td>${formatSize(supporting)}</td><td title="${escapeHTML(row.reasons.join("; "))}">${status}</td><td><button type="button" data-clean="${escapeHTML(row.project_id)}" ${row.eligible ? "" : "disabled"}>Clean up</button> <button type="button" data-delete-project="${escapeHTML(row.project_id)}" ${row.clips.length ? "" : "disabled"}>Delete clips…</button></td></tr>`;
+    })
+    .join("");
+}
+function showStorageResult(text, error = false) {
+  const out = $("#storage-result");
+  out.hidden = false;
+  out.textContent = text;
+  out.classList.toggle("error", error);
+}
+async function cleanUp(projectId) {
+  const result = await api(
+    "/api/storage/cleanup",
+    projectId ? { project_id: projectId } : {},
+    { timeout: 300000 },
+  );
+  if (projectId && !result.cleaned)
+    showStorageResult(`Not cleaned: ${result.reasons.join("; ")}`, true);
+  else if (projectId)
+    showStorageResult(
+      `Deleted ${result.files_deleted} supporting files, recovered ${formatSize(result.bytes_freed)}. Final clips kept.`,
+    );
+  else
+    showStorageResult(
+      `${result.projects_cleaned} project(s) cleaned: ${result.files_deleted} files deleted, ${formatSize(result.bytes_freed)} recovered. Final clips kept.`,
+    );
+  await loadStorage();
+}
+// Two steps: the server lists exactly what would go, the user confirms that
+// list, and only then is the same list deleted.
+async function deleteClips(projectId, names) {
+  if (!names.length) throw new Error("Select the clips to delete.");
+  const plan = await api(`/api/projects/${projectId}/delete-clips`, {
+    files: names,
+    confirm: false,
+  });
+  if (plan.blocked.length)
+    throw new Error(`Cancel the upload first: ${plan.blocked.join(", ")}`);
+  $("#delete-summary").textContent =
+    `${plan.clips.length} clip(s), ${formatSize(plan.bytes)} will be released: ` +
+    `${plan.uploaded} uploaded, ${plan.not_uploaded} NOT uploaded.`;
+  $("#delete-list").innerHTML = plan.clips
+    .map(
+      (c) =>
+        `<li class="${c.upload_state === "uploaded" ? "uploaded" : "not-uploaded"}"><strong>${uploadBadge(c.upload_state)}</strong> ${escapeHTML(c.name)} · ${formatSize(c.bytes)}<br><small>${c.files.map(escapeHTML).join(", ")}</small></li>`,
+    )
+    .join("");
+  const dialog = $("#delete-dialog");
+  $("#delete-confirm").checked = false;
+  $("#delete-go").disabled = true;
+  const choice = await new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
+  });
+  if (choice !== "delete" || !$("#delete-confirm").checked) {
+    notice("Nothing was deleted.");
+    return null;
+  }
+  const result = await api(`/api/projects/${projectId}/delete-clips`, {
+    files: names,
+    confirm: true,
+    confirmed: plan.clips.map((c) => c.name),
+  });
+  notice(`Deleted ${result.files_deleted} file(s), released ${formatSize(result.bytes_freed)}.`);
+  return result;
+}
+$("#delete-confirm").addEventListener("change", (event) => {
+  $("#delete-go").disabled = !event.target.checked;
+});
+$("#storage-refresh").addEventListener("click", safe(loadStorage));
+$("#storage-clean-all").addEventListener("click", safe(() => cleanUp(null)));
+$("#storage-rows").addEventListener(
+  "click",
+  safe(async (event) => {
+    const clean = event.target.closest("[data-clean]");
+    if (clean) return cleanUp(clean.dataset.clean);
+    const del = event.target.closest("[data-delete-project]");
+    if (del) {
+      const row = state.storage.projects.find((p) => p.project_id === del.dataset.deleteProject);
+      if (await deleteClips(row.project_id, row.clips.map((c) => c.name))) await loadStorage();
+    }
+  }),
+);
+function selectedClipNames() {
+  return [...document.querySelectorAll("#outputs [data-clip-select]:checked")].map(
+    (el) => el.dataset.clipSelect,
+  );
+}
+async function deleteFromProject(names) {
+  if (await deleteClips(state.id, names)) await selectProject(state.id);
+}
+$("#delete-selected-clips").addEventListener(
+  "click",
+  safe(() => deleteFromProject(selectedClipNames())),
+);
+$("#delete-all-clips").addEventListener(
+  "click",
+  safe(() =>
+    deleteFromProject(
+      state.detail.files
+        .filter((f) => f.kind === "clips" && f.name.endsWith(".mp4"))
+        .map((f) => f.name),
+    ),
+  ),
+);

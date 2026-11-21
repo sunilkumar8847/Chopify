@@ -539,6 +539,45 @@ class UploadQueue:
             raise _Transient(f"HTTP {status}")
         self._api_error(status, body)
 
+    # ------------------------------------------------- verification
+    VERIFY_BATCH = 50                 # videos.list accepts up to 50 ids
+
+    def verify_uploaded(self, entry_ids):
+        """Ask YouTube for the current status of uploaded videos.
+
+        One videos.list call (1 general quota unit) per 50 videos. Each
+        entry gets ``youtube_status``: processed | uploaded (still
+        processing) | failed | rejected | deleted (not found), plus
+        ``verified_at``. Raises UploadError when YouTube cannot be asked;
+        callers treat that as "uncertain" and keep every file.
+        """
+        entries = {e["id"]: e for e in self.entries()}
+        wanted = [entries[i] for i in entry_ids if i in entries
+                  and entries[i].get("state") == "uploaded" and entries[i].get("video_id")]
+        results = {}
+        for start in range(0, len(wanted), self.VERIFY_BATCH):
+            batch = wanted[start:start + self.VERIFY_BATCH]
+            ids = ",".join(e["video_id"] for e in batch)
+            try:
+                status, _, body = self.account.authorized(
+                    "GET", f"{youtube_auth.API}/videos?{urlencode({'part': 'status', 'id': ids})}",
+                    None, None, 60)
+            except Exception as exc:
+                raise UploadError(f"YouTube could not be asked about the uploads: {exc}") from exc
+            if status != 200:
+                reason, message = _error_reason(body)
+                raise UploadError(f"YouTube could not confirm the uploads "
+                                  f"(HTTP {status} {reason or ''} {message or ''}).".strip())
+            found = {item.get("id"): item.get("status") or {}
+                     for item in json.loads(body.decode("utf-8")).get("items") or []}
+            for entry in batch:
+                info = found.get(entry["video_id"])
+                value = "deleted" if info is None else str(info.get("uploadStatus") or "unknown")
+                results[entry["id"]] = value
+                self._mutate(entry["id"], lambda e, v=value: e.update(
+                    youtube_status=v, verified_at=self.clock()))
+        return results
+
     def _finish(self, entry_id, video):
         video_id = video.get("id")
         if not video_id:

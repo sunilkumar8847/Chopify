@@ -186,6 +186,35 @@
             </form>
           </section>
         </div>
+        <section id="storage-panel" class="panel dash-panel">
+          <div class="panel-title">
+            <h2>Storage</h2>
+            <span id="storage-summary">FINAL CLIPS ARE NEVER DELETED AUTOMATICALLY</span>
+          </div>
+          <div id="storage-cards" class="dash-cards" aria-live="polite"></div>
+          <div class="dash-inline storage-actions">
+            <button id="storage-refresh" type="button">Refresh storage</button>
+            <button id="storage-clean-all" type="button">Clean up all eligible</button>
+          </div>
+          <p id="storage-result" class="hint" role="status" hidden></p>
+          <p class="hint">
+            Supporting files (downloads, previews, transcripts, caches) are
+            removed only after every final clip of a project is uploaded and
+            YouTube reports it processed. Final MP4 clips, project metadata
+            and upload history are kept.
+          </p>
+          <div class="table-wrap">
+            <table class="dash-table storage-table">
+              <thead>
+                <tr>
+                  <th>Project</th><th>Total</th><th>Final clips</th>
+                  <th>Supporting</th><th>Cleanup</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="storage-rows"></tbody>
+            </table>
+          </div>
+        </section>
         <section class="panel dash-panel">
           <div class="panel-title">
             <h2>Activity log</h2>
@@ -496,6 +525,11 @@
                 <h2>Rendered clips</h2>
                 <span id="output-count">0 FILES</span>
               </div>
+              <div id="clip-tools" class="dash-inline clip-tools" hidden>
+                <button id="delete-selected-clips" type="button">Delete selected clips</button>
+                <button id="delete-all-clips" type="button">Delete all clips</button>
+              </div>
+              <p id="cleaned-note" class="hint" hidden></p>
               <p id="legacy-captions" class="hint legacy-note" hidden>
                 Some clips were exported before captions switched to Roman
                 Hinglish. Their titles are already updated; press
@@ -1059,6 +1093,27 @@
               Upload to YouTube…
             </button>
             <button id="publish-close" type="button">Close</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title">
+        <form method="dialog" id="delete-form">
+          <h2 id="delete-title">Delete final clips permanently?</h2>
+          <p id="delete-summary"></p>
+          <ul id="delete-list" class="delete-list"></ul>
+          <p class="hint">
+            Deleted clips cannot be recovered. Videos already on YouTube are
+            not changed; upload history is kept.
+          </p>
+          <label class="check"
+            ><input type="checkbox" id="delete-confirm" /> I understand these
+            files will be permanently deleted</label
+          >
+          <div class="dialog-actions">
+            <button value="cancel" id="delete-cancel" type="submit">Cancel</button>
+            <button value="delete" id="delete-go" class="danger" type="submit" disabled>
+              Delete permanently
+            </button>
           </div>
         </form>
       </dialog>

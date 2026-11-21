@@ -321,7 +321,10 @@ def init_project(path, source, options, project_id=None):
     path.mkdir(parents=True, exist_ok=True)
     state = {"id": project_id, "source": source.strip(), "options": options,
              "status": "new", "stage": "waiting", "created": time.time(),
-             "updated": time.time(), "cache": {}, "renders": {}, "error": None}
+             "updated": time.time(), "cache": {}, "renders": {}, "error": None,
+             # New projects clean up supporting files once every final clip
+             # is uploaded and verified on YouTube (final clips are kept).
+             "storage": {"auto_cleanup": True}}
     save_project(path, state)
     return state
 

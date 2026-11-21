@@ -481,6 +481,10 @@ def pipeline(path, state, uploads=()):
         "render": any((path / "clips").glob("*.mp4")) if (path / "clips").is_dir() else False,
         "upload": any(u.get("state") == "uploaded" for u in uploads),
     }
+    if (state.get("storage") or {}).get("cleaned_at"):
+        # Supporting files were deleted after upload; these stages finished.
+        for stage in ("source", "transcribe", "discover", "select"):
+            has[stage] = True
     running = status in ("queued", "running", "recording", "finalizing")
     result = {}
     for stage in STAGES:

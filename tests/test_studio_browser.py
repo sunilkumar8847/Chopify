@@ -273,3 +273,77 @@ def test_project_view_shows_the_real_device_and_cpu_warning(browser, studio, mon
     assert "Whisper medium on CPU (int8)" in mode and "0.2× video length" in mode
     warning = browser.evaluate("document.querySelector('#job-warning').textContent")
     assert "Transcribing on CPU" in warning and "Captions not used" in warning
+
+
+# ------------------------------------------------------------- storage
+
+def _project_with_clips(studio, names=("001-ab12-hook.mp4", "002-cd34-other.mp4")):
+    state = projects.create_project(studio.app.root, URL, {})
+    path = projects.project_path(studio.app.root, state["id"])
+    (path / "clips").mkdir()
+    for name in names:
+        (path / "clips" / name).write_bytes(b"\0" * 4096)
+        (path / "clips" / name.replace(".mp4", ".srt")).write_text("1\n", encoding="utf-8")
+    (path / "audio.webm").write_bytes(b"\0" * 8192)
+    projects.update_project(path, lambda s: s.update(status="complete"))
+    return state["id"], path
+
+
+def test_manual_clip_deletion_needs_confirmation_in_the_browser(browser, studio):
+    pid, path = _project_with_clips(studio)
+    studio.app.uploads._save([{
+        "id": "e1", "project_id": pid, "file": str(path / "clips" / "001-ab12-hook.mp4"),
+        "name": "001-ab12-hook.mp4", "state": "uploaded", "video_id": "vid1",
+        "youtube_status": "processed", "url": "https://youtube.com/shorts/vid1"}])
+    open_studio(browser, studio)
+    browser.evaluate(f"selectProject('{pid}')")
+    browser.wait("!document.querySelector('#clip-tools').hidden", timeout=10)
+    browser.evaluate("document.querySelector('#delete-all-clips').click()")
+    browser.wait("document.querySelector('#delete-dialog').open", timeout=10)
+    summary = browser.evaluate("document.querySelector('#delete-summary').textContent")
+    assert "2 clip(s)" in summary and "1 uploaded, 1 NOT uploaded" in summary
+    items = browser.evaluate("[...document.querySelectorAll('#delete-list li')].map(l => l.textContent)")
+    assert any(i.startswith("UPLOADED") and "001-ab12-hook.mp4" in i for i in items)
+    assert any(i.startswith("NOT UPLOADED") and "002-cd34-other.mp4" in i for i in items)
+    assert browser.evaluate("document.querySelector('#delete-go').disabled"), "confirm first"
+    browser.evaluate("document.querySelector('#delete-cancel').click()")
+    browser.wait("document.querySelector('#notice').textContent.includes('Nothing was deleted')")
+    assert (path / "clips" / "001-ab12-hook.mp4").exists()
+    # select one clip, confirm, delete
+    browser.evaluate("document.querySelector('[data-clip-select=\"002-cd34-other.mp4\"]').click();"
+                     "document.querySelector('#delete-selected-clips').click()")
+    browser.wait("document.querySelector('#delete-dialog').open", timeout=10)
+    browser.evaluate("document.querySelector('#delete-confirm').click();"
+                     "document.querySelector('#delete-go').click()")
+    browser.wait("document.querySelector('#notice').textContent.includes('Deleted')", timeout=10)
+    assert not (path / "clips" / "002-cd34-other.mp4").exists()
+    assert (path / "clips" / "001-ab12-hook.mp4").exists(), "only the confirmed clip"
+    browser.wait("document.querySelectorAll('#outputs video').length === 1", timeout=10)
+    assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
+
+
+def test_storage_panel_cleans_up_and_clips_stay_playable(browser, studio, monkeypatch):
+    import storage
+    monkeypatch.setattr(storage, "check_clip", lambda file, probe: None)
+    pid, path = _project_with_clips(studio, names=("001-ab12-hook.mp4",))
+    studio.app.uploads._save([{
+        "id": "e1", "project_id": pid, "file": str(path / "clips" / "001-ab12-hook.mp4"),
+        "name": "001-ab12-hook.mp4", "state": "uploaded", "video_id": "vid1",
+        "youtube_status": "processed", "url": "https://youtube.com/shorts/vid1"}])
+    open_studio(browser, studio)
+    browser.evaluate("showDashboard()")
+    browser.wait("document.querySelectorAll('#storage-rows tr').length === 1", timeout=15)
+    cards = browser.evaluate("document.querySelector('#storage-cards').textContent")
+    assert "Final clips (kept)" in cards and "Safe to reclaim now" in cards
+    browser.evaluate(f"document.querySelector('[data-clean=\"{pid}\"]').click()")
+    browser.wait("document.querySelector('#storage-result').textContent.includes('recovered')",
+                 timeout=15)
+    result = browser.evaluate("document.querySelector('#storage-result').textContent")
+    assert "Deleted 2 supporting files" in result and "Final clips kept" in result
+    assert not (path / "audio.webm").exists() and (path / "clips" / "001-ab12-hook.mp4").exists()
+    browser.evaluate(f"selectProject('{pid}')")
+    browser.wait("!document.querySelector('#cleaned-note').hidden", timeout=10)
+    src = browser.evaluate("document.querySelector('#outputs video').getAttribute('src')")
+    assert src == f"/media/{pid}/clips/001-ab12-hook.mp4"
+    status = browser.evaluate(f"fetch('{src}').then(r => r.status)", await_promise=True)
+    assert status == 200

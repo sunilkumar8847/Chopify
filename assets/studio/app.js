@@ -46,23 +46,66 @@ function notice(message, error = false) {
     error ? 15000 : 6000,
   );
 }
-async function api(path, data) {
-  const response = await fetch(
-    path,
-    data === undefined
-      ? {}
-      : {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Chopify-Token": state.token,
+// Every request has a time limit and a readable error. A request the
+// browser could not deliver (Studio stopped, network) or that took too long
+// never fails silently.
+const API_TIMEOUT_MS = 30000;
+class ApiError extends Error {
+  constructor(message, { status = 0, requestId = null, kind = "http" } = {}) {
+    super(message);
+    this.status = status;
+    this.requestId = requestId;
+    this.kind = kind;
+  }
+}
+async function api(path, data, { timeout = state.apiTimeout || API_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  let response;
+  try {
+    response = await fetch(
+      path,
+      data === undefined
+        ? { signal: controller.signal }
+        : {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Chopify-Token": state.token,
+            },
+            body: JSON.stringify(data),
+            signal: controller.signal,
           },
-          body: JSON.stringify(data),
-        },
-  );
-  const result = await response.json();
-  if (!response.ok)
-    throw new Error(result.error || `Request failed (${response.status})`);
+    );
+  } catch (error) {
+    if (error.name === "AbortError")
+      throw new ApiError(
+        `Studio did not answer within ${Math.round(timeout / 1000)} seconds. ` +
+          "It may be busy or stopped; check the Studio terminal, then try again.",
+        { kind: "timeout" },
+      );
+    throw new ApiError(
+      "Cannot reach Chopify Studio. Check that it is still running " +
+        "(python dashboard.py), then reload this page.",
+      { kind: "network" },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  const requestId = response.headers.get("X-Request-ID");
+  let result = null;
+  try {
+    result = await response.json();
+  } catch (error) {
+    result = null;
+  }
+  if (!response.ok || result === null) {
+    const reason =
+      (result && result.error) ||
+      `Studio answered with HTTP ${response.status} and no details.`;
+    const ref = requestId && response.status >= 500 ? ` (request ${requestId})` : "";
+    throw new ApiError(reason + ref, { status: response.status, requestId });
+  }
   return result;
 }
 function safe(handler) {
@@ -411,8 +454,17 @@ function updateStatus(detail) {
   const error =
     detail.project.error ||
     (errors.length ? `${errors.length} clip(s) failed to render.` : "");
-  $("#job-error").hidden = !error;
-  $("#job-error").textContent = error;
+  const diagnosis = detail.diagnosis;
+  const failedText =
+    diagnosis && error
+      ? `Failed at ${diagnosis.stage}: ${diagnosis.problem}` +
+        (diagnosis.problem !== error ? ` — ${error}` : "")
+      : error;
+  $("#job-error").hidden = !failedText;
+  $("#job-error").textContent = failedText;
+  $("#job-advice").hidden = !(diagnosis && diagnosis.advice);
+  $("#job-advice").textContent = diagnosis?.advice ? `What to do: ${diagnosis.advice}` : "";
+  renderActivity(detail);
   $("#log").textContent = detail.log || "No job has run yet.";
   state.busy = detail.busy;
   $("#cancel-job").hidden = !detail.busy;
@@ -433,6 +485,30 @@ function updateStatus(detail) {
     "#settings-form input, #settings-form select, #candidates input, #transcript-words input, #caption-form input, #caption-form select, #caption-presets button",
   ))
     el.disabled = detail.busy;
+}
+function renderActivity(detail) {
+  const activity = detail.activity;
+  const box = $("#job-status");
+  if (!activity) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const status = detail.project.status;
+  $("#job-current").textContent =
+    activity.current ||
+    (status === "failed"
+      ? "Stopped (see the error below)"
+      : status === "cancelled"
+        ? "Cancelled"
+        : status === "interrupted"
+          ? "Interrupted (press Retry on the dashboard or Find / refresh clips)"
+          : "Idle");
+  $("#job-last").textContent = activity.last_completed || "Nothing yet";
+  const bar = $("#job-progress");
+  const fraction = activity.progress?.fraction;
+  bar.hidden = !(detail.busy && typeof fraction === "number");
+  if (!bar.hidden) bar.value = Math.round(fraction * 100);
 }
 function formatBytes(value) {
   const bytes = Number(value) || 0;
@@ -804,41 +880,64 @@ $("#projects").addEventListener(
     if (button) await selectProject(button.dataset.id);
   }),
 );
-$("#create-form").addEventListener(
-  "submit",
-  safe(async (event) => {
-    event.preventDefault();
-    const sources = $("#sources")
-      .value.split(/\r?\n/)
-      .map((s) => s.trim().replace(/^"|"$/g, ""))
-      .filter(Boolean);
-    if (!sources.length) throw new Error("Add a video path or URL.");
-    const button = event.target.querySelector("button[type=submit]");
-    button.disabled = true;
-    try {
-      const options = {
-        aspect: $("#new-aspect").value,
-        whisper_model: $("#new-model").value,
-        style: $("#new-style").value,
-      };
-      const result = await api("/api/batch", { sources, options });
-      const skipped = result.duplicates || [];
-      if (result.projects.length) await selectProject(result.projects[0].id);
-      else if (skipped[0]?.project_id) await selectProject(skipped[0].project_id);
-      const made = result.projects.length;
-      notice(
-        `${made} project${made === 1 ? "" : "s"} queued for review.` +
-          (skipped.length
-            ? ` ${skipped.length} source${skipped.length === 1 ? " was" : "s were"} skipped: already in a project (no duplicate processing).`
-            : ""),
-        !made,
+// Find clips. The form is "novalidate": its hidden recording options must
+// never block it; sources are checked here and by the server.
+$("#create-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  findClips(event.target).catch((error) =>
+    notice(`Find clips failed: ${error.message}`, true),
+  );
+});
+async function findClips(form) {
+  if (state.submitting) return; // a second click while submitting
+  const sources = $("#sources")
+    .value.split(/\r?\n/)
+    .map((s) => s.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+  if (!sources.length) {
+    $("#sources").focus();
+    throw new Error("Paste a video URL or a local file path first.");
+  }
+  const button = form.querySelector("button[type=submit]");
+  const label = button.innerHTML;
+  state.submitting = true;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "Submitting…";
+  notice(
+    `Submitting ${sources.length} source${sources.length === 1 ? "" : "s"} to Studio…`,
+  );
+  try {
+    const options = {
+      aspect: $("#new-aspect").value,
+      whisper_model: $("#new-model").value,
+      style: $("#new-style").value,
+    };
+    const result = await api("/api/batch", { sources, options });
+    const skipped = result.duplicates || [];
+    const failed = result.errors || [];
+    if (result.projects.length) await selectProject(result.projects[0].id);
+    else if (skipped[0]?.project_id) await selectProject(skipped[0].project_id);
+    const made = result.projects.length;
+    const parts = [];
+    if (made)
+      parts.push(
+        `Project created${made === 1 ? "" : ` (${made})`} · Find clips is queued; progress shows above.`,
       );
-      $("#sources").value = "";
-    } finally {
-      button.disabled = false;
-    }
-  }),
-);
+    if (skipped.length)
+      parts.push(
+        `${skipped.length} source${skipped.length === 1 ? " was" : "s were"} skipped: already in a project (no duplicate processing).`,
+      );
+    for (const item of failed) parts.push(`${item.source}: ${item.error}`);
+    notice(parts.join(" "), !made || failed.length > 0);
+    if (made) $("#sources").value = "";
+  } finally {
+    state.submitting = false;
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.innerHTML = label;
+  }
+}
 $("#detect").addEventListener(
   "click",
   safe(async () => {
@@ -851,7 +950,7 @@ $("#detect").addEventListener(
     button.disabled = true;
     button.textContent = "Checking…";
     try {
-      const result = await api("/api/detect", { source });
+      const result = await api("/api/detect", { source }, { timeout: 120000 });
       state.detected = result;
       $("#detect-result").hidden = false;
       $("#detect-label").textContent = result.label;
@@ -1233,8 +1332,15 @@ setInterval(async () => {
       }
     }
     $("#connection").textContent = "● Local session";
+    $("#connection-banner").hidden = true;
   } catch (error) {
     $("#connection").textContent = "Connection lost · restart Studio";
+    const banner = $("#connection-banner");
+    banner.hidden = false;
+    banner.textContent =
+      error.kind === "network" || error.kind === "timeout"
+        ? `${error.message} Your projects are safe on disk.`
+        : `Studio reported a problem: ${error.message}`;
   } finally {
     polling = false;
   }

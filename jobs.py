@@ -27,6 +27,15 @@ import threading
 import time
 import traceback
 
+import applog
+
+_current = threading.local()
+
+
+def current_job():
+    """The Job running in this worker thread, or None."""
+    return getattr(_current, "job", None)
+
 DEFAULT_LANES = {"record": 4, "process": 1, "upload": 1}
 ACTIVE = {"queued", "running"}
 FINISHED = {"succeeded", "failed", "cancelled"}
@@ -182,12 +191,24 @@ class JobManager:
                 job.state, job.finished = "cancelled", time.time()
                 return None
             job.state, job.started = "running", time.time()
+        _current.job = job
+        try:
+            with applog.bound(project_id=None if job.project_id.startswith("youtube-")
+                              else job.project_id, job_id=job.id):
+                return self._attempts(job)
+        finally:
+            _current.job = None
+
+    def _attempts(self, job):
         while True:
             job.attempts += 1
             try:
                 job.result = job.fn(*job.args, **job.kwargs)
             except Exception as exc:  # noqa: BLE001 - recorded on the job
                 job.error = str(exc) or exc.__class__.__name__
+                # Never swallowed: the full traceback goes to the log.
+                applog.error("job.exception", f"{job.kind} job raised", exc=exc,
+                             lane=job.lane, attempt=job.attempts)
                 if (job.attempts < job.max_attempts
                         and not job.cancel_event.wait(job.retry_delay)):
                     continue

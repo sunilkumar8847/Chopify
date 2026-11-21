@@ -5,6 +5,7 @@ Local files are never copied. Long URL sources download audio for discovery
 selected video sections. Everything uses yt-dlp/ffprobe locally.
 """
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -95,10 +96,14 @@ def describe_source(meta):
     if status == "not_live":
         return {"kind": "video", "label": "Video", "can_process": True,
                 "can_record": False, "message": "Regular video."}
-    return {"kind": "unknown", "label": "Unknown", "can_process": True,
-            "can_record": False,
-            "message": "Could not read this URL's details. Processing will "
-                       "still try to download it."}
+    reason = meta.get("probe_error")
+    return {"kind": "unknown", "label": "Cannot read this video" if reason else "Unknown",
+            "can_process": True, "can_record": False,
+            "message": (f"YouTube/yt-dlp could not read this URL: {str(reason).rstrip('.')}. "
+                        "Find clips will still try, but it will probably fail at "
+                        "the download step." if reason else
+                        "Could not read this URL's details. Processing will "
+                        "still try to download it.")}
 
 
 def live_block_message(meta):
@@ -222,15 +227,18 @@ def _probe_url(url, run=None):
     except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
         # Upcoming streams have no formats yet, so yt-dlp exits with an error.
         # Ask again for metadata only; normal failures stay "unknown".
+        # Keep yt-dlp's own reason ("This video is unavailable") so the user
+        # is told why instead of a generic "unknown".
+        failed = {**fallback, "probe_error": ytdlp_reason(exc)}
         data = _probe_without_formats(command, run)
         if data is None:
             stderr = str(getattr(exc, "stderr", "") or "").lower()
             if any(hint in stderr for hint in _UPCOMING_HINTS):
                 return {**fallback, "live_status": "is_upcoming"}
-            return fallback
+            return failed
         status = live_status_from(data)
         if status not in TRANSIENT_LIVE:
-            return fallback
+            return failed
         return {**fallback, "title": str(data.get("title") or url),
                 "live_status": status, "is_live": status == "is_live",
                 "release_timestamp": data.get("release_timestamp")}
@@ -285,6 +293,15 @@ def _probe_url(url, run=None):
         "is_live": live_status_from(data) == "is_live",
         "release_timestamp": data.get("release_timestamp"),
     }
+
+
+def ytdlp_reason(exc):
+    """yt-dlp's own error line from a failed run ("This video is unavailable")."""
+    text = str(getattr(exc, "stderr", "") or getattr(exc, "output", "") or "")
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    reason = next((l for l in reversed(lines) if l.startswith("ERROR")), "")
+    reason = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*[\w-]+:\s*)?", "", reason)
+    return reason[:300] or None
 
 
 def _probe_without_formats(command, run):
@@ -355,8 +372,10 @@ def download_visual_discovery(url, workdir, runner=None):
             "-f", "worst[height<=360]/worst", "--no-playlist",
             "-o", str(workdir / "discovery.%(ext)s"), url])
     except (OSError, subprocess.SubprocessError) as exc:
+        reason = ytdlp_reason(exc)
         raise RuntimeError(
-            "Download failed: no video file produced.") from exc
+            f"Download failed: {reason}" if reason
+            else "Download failed: no video file produced.") from exc
     video = _find_media(workdir, "discovery")
     if video is None:
         raise RuntimeError("Download failed: no video file produced.")

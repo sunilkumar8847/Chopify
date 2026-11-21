@@ -20,3 +20,11 @@ def _software_encoder(monkeypatch):
 def _isolated_youtube_config(monkeypatch, tmp_path_factory):
     # Tests never read or write the real YouTube sign-in or upload queue.
     monkeypatch.setenv("CHOPIFY_CONFIG", str(tmp_path_factory.mktemp("config")))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_logs(monkeypatch, tmp_path_factory):
+    # Tests never write to the real logs/ folder.
+    monkeypatch.setenv("CHOPIFY_LOG_DIR", str(tmp_path_factory.mktemp("logs")))
+    for name in ("CHOPIFY_PROJECT_ID", "CHOPIFY_JOB_ID", "CHOPIFY_REQUEST_ID"):
+        monkeypatch.delenv(name, raising=False)

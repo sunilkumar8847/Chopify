@@ -392,7 +392,7 @@ _RULES = [
      "The video file was not found.",
      "Check that the file still exists at that path (moved, renamed or on a "
      "disconnected drive?), then add it again."),
-    (None, r"video unavailable|has been removed|does not exist|404",
+    (None, r"video (is )?unavailable|is not available|has been removed|does not exist|404",
      "The video is unavailable.",
      "Check the URL. Removed or region-blocked videos cannot be processed."),
     (None, r"this stream is live|is live\b|has not started|upcoming",
@@ -514,3 +514,28 @@ def progress(state):
         return {"stage": "render", "fraction": round(done / total, 3) if total else 0,
                 "detail": f"clip {match.group(2)} of {total}"}
     return None
+
+
+STAGE_LABELS = {"source": "Getting the video", "transcribe": "Transcribing speech",
+                "discover": "Finding candidate moments", "select": "AI judging and choosing clips",
+                "render": "Rendering clips", "upload": "Uploading"}
+
+
+def activity(state, stages):
+    """What the user sees first: current operation, last success, progress."""
+    status = state.get("status")
+    current = stage_of(state.get("stage"))
+    done = [s for s in STAGES if stages.get(s) == "done"]
+    result = {"status": status, "current": None,
+              "last_completed": STAGE_LABELS[done[-1]] if done else None,
+              "progress": progress(state)}
+    if status == "queued":
+        result["current"] = "Waiting for its turn in the queue"
+    elif status in ("running", "recording", "finalizing"):
+        label = STAGE_LABELS.get(current) or str(state.get("stage") or "Working")
+        info = result["progress"]
+        if info and info.get("fraction") is not None and info.get("stage") == current:
+            label += f" ({round(info['fraction'] * 100)}%"
+            label += f", {info['detail']})" if info.get("detail") else ")"
+        result["current"] = label
+    return result

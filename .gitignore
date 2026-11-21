@@ -24,6 +24,7 @@ upload_settings.json
 clips/
 models/
 projects/
+logs/
 _site/
 .pytest_cache/
 

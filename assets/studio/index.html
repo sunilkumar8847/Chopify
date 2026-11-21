@@ -40,6 +40,7 @@
         <span>THE LOCAL CUTTING ROOM</span
         ><span id="connection"><span class="dot"></span> Local session</span>
       </header>
+      <div id="connection-banner" class="connection-banner" role="alert" hidden></div>
       <div id="notice" role="status" aria-live="polite" hidden></div>
       <section id="dashboard-view" class="view" hidden>
         <div class="dash-head">
@@ -202,7 +203,7 @@
             export.
           </p>
         </div>
-        <form id="create-form" class="panel input-panel">
+        <form id="create-form" class="panel input-panel" novalidate>
           <div class="panel-title">
             <h2>Start with your footage</h2>
             <span>ONE VIDEO OR A WHOLE QUEUE</span>
@@ -243,7 +244,7 @@
                     type="number"
                     min="0.1"
                     max="48"
-                    step="0.5"
+                    step="0.1"
                     value="12" /></label
                 ><label
                   >Afterwards<select name="after">
@@ -326,7 +327,19 @@
           </div>
           <span id="status" class="status"></span>
         </div>
+        <section id="job-status" class="job-status" aria-live="polite" hidden>
+          <div>
+            <span class="eyebrow">NOW</span>
+            <strong id="job-current">Idle</strong>
+            <progress id="job-progress" max="100" hidden></progress>
+          </div>
+          <div>
+            <span class="eyebrow">LAST DONE</span>
+            <span id="job-last">Nothing yet</span>
+          </div>
+        </section>
         <p id="job-error" role="alert" hidden></p>
+        <p id="job-advice" class="hint job-advice" hidden></p>
         <section id="recording-panel" class="panel recording-panel" hidden>
           <div class="panel-title">
             <h2>Live recording</h2>
@@ -351,7 +364,7 @@
                   type="number"
                   min="0.1"
                   max="48"
-                  step="0.5"
+                  step="0.1"
                   value="12" /></label
               ><label
                 >Afterwards<select name="after">

@@ -14,6 +14,7 @@ import time
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
+import applog
 import automation
 import branding
 import ingest
@@ -67,6 +68,8 @@ def project_detail(root, project_id):
         "source_meta": source_meta,
         "progress": state.get("progress") or {},
         "diagnosis": automation.diagnose(state, data["log"][-4000:]),
+        "pipeline": automation.pipeline(path, state),
+        "activity": automation.activity(state, automation.pipeline(path, state)),
         "legacy_captions": projects.legacy_caption_clips(path),
         "render_errors": state.get("render_errors") or [],
         "playable_source": bool(
@@ -113,12 +116,54 @@ def detect_source(source):
     source = source.strip()
     if not ingest.is_url(source) and not Path(source).expanduser().is_file():
         raise ValueError(f"Video file does not exist or URL is invalid: {source}")
-    meta = ingest.probe_source(source)
-    info = ingest.describe_source(meta)
+    with applog.step("source.validate", f"Check source {source}"):
+        meta = ingest.probe_source(source)
+        info = ingest.describe_source(meta)
+    if meta.get("probe_error"):
+        applog.warning("source.validate", "yt-dlp could not read the URL",
+                       error=meta["probe_error"])
     return {**info, "source": source, "title": meta.get("title"),
+            "probe_error": meta.get("probe_error"),
             "duration": meta.get("duration"),
             "live_status": meta.get("live_status"),
             "release_timestamp": meta.get("release_timestamp")}
+
+
+def source_problem(source):
+    """Why a source cannot be processed, or None."""
+    if not isinstance(source, str) or not source.strip():
+        return "Empty source line."
+    source = source.strip()
+    if ingest.is_url(source):
+        return None
+    if re.match(r"^[a-z][a-z0-9+.-]*://", source, re.I) or source.lower().startswith("www."):
+        return f"Not a usable URL (use a full http(s) link): {source}"
+    if not Path(source).expanduser().is_file():
+        return f"Video file does not exist: {source}"
+    return None
+
+
+def error_from_log(log_path, code):
+    """A readable reason from a failed worker's own output."""
+    try:
+        with open(log_path, "rb") as handle:
+            handle.seek(max(0, Path(log_path).stat().st_size - 6000))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    run = []
+    for line in reversed(lines):
+        if line.startswith("===== "):
+            break
+        run.insert(0, line)
+    meaningful = [l.strip() for l in run if l.strip()]
+    for line in reversed(meaningful):
+        if re.search(r"(?i)error|failed|exception|not found|traceback|refused|denied", line) \
+                and not line.startswith("PREFLIGHT OK"):
+            return f"{line[:400]} (exit code {code})"
+    if meaningful:
+        return f"{meaningful[-1][:400]} (exit code {code})"
+    return f"The worker exited with code {code} before writing any output."
 
 
 class Studio:
@@ -197,21 +242,53 @@ class Studio:
                 return state
         return None
 
-    def create_sources(self, sources, options, allow_duplicates=False, origin="manual"):
-        """Create and queue projects; the same video is never added twice."""
+    def create_sources(self, sources, options, allow_duplicates=False, origin="manual",
+                       errors=None):
+        """Create and queue projects; the same video is never added twice.
+
+        A source that cannot be used is reported in ``errors`` (when given a
+        list) instead of aborting the batch. A project whose job cannot be
+        queued is marked failed with the reason, never left waiting.
+        """
         created, duplicates = [], []
         seen = set()
         for source in sources:
+            with applog.step("source.validate", f"Validate {source}"):
+                problem = source_problem(source)
+            if problem:
+                applog.warning("source.validate", problem, source=source)
+                if errors is None:
+                    raise ValueError(problem)
+                errors.append({"source": source, "error": problem})
+                continue
             key = automation.source_key(source)
             existing = None if allow_duplicates else self.find_duplicate(source)
             if existing is not None or key in seen:
                 duplicates.append({"source": source,
                                    "project_id": existing["id"] if existing else None})
+                applog.info("source.duplicate", "Source already has a project",
+                            source=source, existing=existing["id"] if existing else None)
                 continue
             seen.add(key)
-            state = projects.create_project(self.root, source, options)
-            self.events.add("created", f"New project from {origin}: {source}", state["id"])
-            self.enqueue(state["id"], "prepare")
+            with applog.step("project.create", f"Create project for {source}"):
+                state = projects.create_project(self.root, source, options)
+            with applog.bound(project_id=state["id"]):
+                self.events.add("created", f"New project from {origin}: {source}", state["id"])
+                try:
+                    self.enqueue(state["id"], "prepare")
+                except Exception as exc:  # noqa: BLE001 - reported, project not stuck
+                    message = f"Could not start processing: {exc}"
+                    applog.error("job.submit", message, exc=exc)
+                    projects.update_project(
+                        projects.project_path(self.root, state["id"]),
+                        lambda s: s.update(status="failed", stage="queue", error=message))
+                    self.events.add("failed", message, state["id"], level="error",
+                                    advice="Press Retry; if it fails again, restart Studio.")
+                    if errors is not None:
+                        errors.append({"source": source, "error": message,
+                                       "project_id": state["id"]})
+                    state = projects.read_project(
+                        projects.project_path(self.root, state["id"]))
             created.append(state)
         if duplicates:
             self.events.add("duplicate", f"Skipped {len(duplicates)} source(s) "
@@ -476,7 +553,9 @@ class Studio:
                                  "Finalize recording (or Resume recording) "
                                  "first; clips are found automatically after.")
             state.update(status="queued", stage=action, error=None,
-                         last_action=action, last_preview=bool(preview), last_pick=pick)
+                         last_action=action, last_preview=bool(preview), last_pick=pick,
+                         last_request_id=applog.context().get("request_id"),
+                         queued_at=time.time())
             projects.save_project(path, state)
             self.events.add("queued", f"{'Export' if action == 'all' else 'Render' if action == 'render' else 'Find clips'}"
                             f"{' (preview)' if preview else ''} queued"
@@ -488,6 +567,8 @@ class Studio:
                                    preview, pick, kind=action)
             job.on_cancel(lambda: self._cancel_process(project_id))
             self.futures[project_id] = job.future
+            applog.info("job.submit", f"{action} job queued", project_id=project_id,
+                        job_id=job.id, paused=self.jobs.paused("process") or None)
             return job
 
     def _cancel_process(self, project_id):
@@ -606,6 +687,18 @@ class Studio:
             pass
         self.events.add("started", f"{action}{' preview' if preview else ''} started.", path.name)
         started = time.time()
+        job = jobs.current_job()
+        try:
+            request_id = projects.read_project(path).get("last_request_id")
+        except (OSError, ValueError, KeyError):
+            request_id = None
+        ids = {"project_id": path.name, "job_id": job.id if job else None,
+               "request_id": request_id}
+        env = dict(os.environ)
+        env.update({"CHOPIFY_PROJECT_ID": path.name, "CHOPIFY_JOB_ID": ids["job_id"] or "",
+                    "CHOPIFY_REQUEST_ID": request_id or ""})
+        applog.info("worker.start", f"Worker started: {action}{' preview' if preview else ''}",
+                    **ids)
         try:
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {action}"
@@ -615,7 +708,7 @@ class Studio:
                     if self.closing:
                         return
                     child = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.DEVNULL,
-                                             stdout=log, stderr=subprocess.STDOUT)
+                                             stdout=log, stderr=subprocess.STDOUT, env=env)
                     self.processes.add(child)
                     self.children[path.name] = child
                 code = child.wait()
@@ -628,23 +721,31 @@ class Studio:
                 state.update(status="cancelled", stage="cancelled", error=None)
                 projects.save_project(path, state)
                 self.events.add("cancelled", f"{action} cancelled.", path.name, level="warning")
+                applog.warning("job.cancelled", f"{action} cancelled", **ids)
             elif code:
                 state = projects.read_project(path)
-                state.update(status="failed", error=state.get("error") or "Job failed. Open the job log for setup or input details.")
-                projects.save_project(path, state)
-                self._log_failure(path, state)
+                if state.get("status") not in ("failed",) or not state.get("error"):
+                    # The worker died without recording why (e.g. preflight or
+                    # an import error): take the reason from its own output.
+                    state.update(status="failed",
+                                 error=state.get("error") or error_from_log(log_path, code))
+                    projects.save_project(path, state)
+                self._log_failure(path, state, ids, time.time() - started)
             else:
                 state = projects.read_project(path)
                 self.events.add("finished", f"{action} finished in {time.time() - started:.0f}s "
                                 f"({state.get('status')}).", path.name)
+                applog.info("job.complete", f"{action} finished ({state.get('status')})",
+                            seconds=round(time.time() - started, 1), **ids)
             return code
         except Exception as exc:
+            applog.error("worker.start", "Worker could not run", exc=exc, **ids)
             state = projects.read_project(path)
-            state.update(status="failed", error=str(exc))
+            state.update(status="failed", error=f"Could not start the worker: {exc}")
             projects.save_project(path, state)
-            self._log_failure(path, state)
+            self._log_failure(path, state, ids, time.time() - started)
 
-    def _log_failure(self, path, state):
+    def _log_failure(self, path, state, ids=None, seconds=None):
         try:
             with (path / "job.log").open("rb") as handle:
                 handle.seek(max(0, (path / "job.log").stat().st_size - 4000))
@@ -655,6 +756,12 @@ class Studio:
         self.events.add("failed", f"Failed at {diagnosis.get('stage', 'unknown')}: "
                         f"{diagnosis.get('problem', state.get('error'))}", path.name,
                         level="error", advice=diagnosis.get("advice"))
+        applog.error("job.failed", f"Failed at {diagnosis.get('stage', 'unknown')}: "
+                     f"{diagnosis.get('problem', state.get('error'))}",
+                     stage=diagnosis.get("stage"), error=state.get("error"),
+                     advice=diagnosis.get("advice"),
+                     seconds=round(seconds, 1) if seconds is not None else None,
+                     log_tail=tail[-1500:] or None, **(ids or {"project_id": path.name}))
 
     def close(self):
         with self.lock:
@@ -699,23 +806,63 @@ class Handler(BaseHTTPRequestHandler):
         self.client_gone = True
         self.close_connection = True
 
+    request_id = None
+    status_sent = None
+
     def send_json(self, data, status=200):
         if self.client_gone:
             return
+        if status >= 400 and isinstance(data, dict) and self.request_id:
+            data = {**data, "request_id": self.request_id}
         body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
+        self.status_sent = status
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if self.request_id:
+                self.send_header("X-Request-ID", self.request_id)
             self.end_headers()
             self.wfile.write(body)
         except ConnectionError:
             self._client_left()
+            applog.info("http.client_gone", "Browser closed the connection before "
+                        "the answer was sent (reload, seek or closed tab)",
+                        path=urlsplit(getattr(self, "path", "") or "").path)
+
+    def _dispatch(self, method, handler):
+        """Request id, logging and a last-resort 500 for every request."""
+        self.request_id = secrets.token_hex(6)
+        path = urlsplit(self.path).path
+        # Polling GETs and media are frequent: log them only when they fail.
+        noisy = method == "GET"
+        started = time.time()
+        with applog.bound(request_id=self.request_id):
+            if not noisy:
+                applog.info("http.request", f"{method} {path}")
+            try:
+                handler()
+            except Exception as exc:  # noqa: BLE001 - logged with traceback, answered
+                applog.error("http.unexpected", f"{method} {path} failed unexpectedly", exc=exc)
+                self.send_json({"error": f"Studio hit an unexpected error ({type(exc).__name__}: "
+                                         f"{exc}). The full details are in the log "
+                                         f"(request {self.request_id})."}, 500)
+            status = self.status_sent or 0
+            if not noisy or status >= 400:
+                applog.write("ERROR" if status >= 500 else "WARNING" if status >= 400 else "INFO",
+                             "http.response", f"{method} {path} -> {status}",
+                             status=status, seconds=round(time.time() - started, 3))
+
+    def do_GET(self):
+        self._dispatch("GET", self._get)
+
+    def do_POST(self):
+        self._dispatch("POST", self._post)
 
     def valid_host(self):
         return self.headers.get("Host") == f"127.0.0.1:{self.server.server_port}"
 
-    def do_GET(self):
+    def _get(self):
         if not self.valid_host():
             return self.send_json({"error": "Use the 127.0.0.1 Studio address."}, 403)
         try:
@@ -754,6 +901,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"projects": self.app.list_projects()})
             if parts == ["api", "overview"]:
                 return self.send_json(self.app.overview())
+            if parts == ["api", "logs"]:
+                query = parse_qs(urlsplit(self.path).query)
+                project = query.get("project", [None])[0]
+                if project is not None:
+                    projects.project_path(self.app.root, project)   # validates id
+                level = query.get("level", ["INFO"])[0].upper()
+                limit = max(1, min(500, int(query.get("limit", ["100"])[0])))
+                entries = applog.read(limit, project, query.get("request", [None])[0],
+                                      level if level in applog.LEVELS else "INFO")
+                return self.send_json({"entries": [
+                    {k: v for k, v in e.items() if k != "traceback"} for e in entries],
+                    "folder": str(applog.log_dir())})
             if parts == ["api", "youtube"]:
                 query = parse_qs(urlsplit(self.path).query)
                 project = query.get("project", [None])[0]
@@ -787,7 +946,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             self.send_json({"error": str(exc)}, 400)
 
-    def do_POST(self):
+    def _post(self):
         origin = self.headers.get("Origin")
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if (not self.valid_host() or (origin is not None and origin != expected)
@@ -840,9 +999,17 @@ class Handler(BaseHTTPRequestHandler):
                     allow = body.get("allow_duplicates", False)
                     if not isinstance(allow, bool):
                         raise ValueError("allow_duplicates must be true or false.")
+                    applog.info("findclips.request", "Find clips request received",
+                                sources=[s.strip() for s in sources][:20], count=len(sources))
+                    errors = []
                     result, duplicates = self.app.create_sources(
-                        [s.strip() for s in sources], options, allow_duplicates=allow)
-                    return self.send_json({"projects": result, "duplicates": duplicates}, 201)
+                        [s.strip() for s in sources], options, allow_duplicates=allow,
+                        errors=errors)
+                    if errors and not result and not duplicates:
+                        return self.send_json({"error": errors[0]["error"],
+                                               "errors": errors}, 400)
+                    return self.send_json({"projects": result, "duplicates": duplicates,
+                                           "errors": errors}, 201)
                 if parts == ["api", "brands"]:
                     name = body["name"]
                     if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", name):
@@ -1026,7 +1193,10 @@ def main():
     args = parser.parse_args()
     server = make_server(args.projects_dir, args.port)
     url = f"http://127.0.0.1:{server.server_port}"
-    print(f"Chopify Studio: {url}\nProjects: {server.app.root}\nPress Ctrl+C to stop.", flush=True)
+    print(f"Chopify Studio: {url}\nProjects: {server.app.root}\n"
+          f"Logs: {applog.log_dir()}  (python applog.py --errors)\nPress Ctrl+C to stop.",
+          flush=True)
+    applog.info("studio.start", f"Studio started on {url}", projects=str(server.app.root))
     if not args.no_browser:
         webbrowser.open(url)
     try:

@@ -11,6 +11,7 @@ from pathlib import Path
 import download_and_transcribe as dt
 import boundaries
 import framing
+import applog
 import highlights
 import hinglish
 import llm
@@ -157,6 +158,11 @@ def score_options(options):
     keys = ("llm", "search", "semantic", "embed_model", "min_score",
             "max_clips", "min_len", "max_len", "preferred_len")
     return {key: options[key] for key in keys}
+
+
+STAGE_OPERATIONS = {"source": "source.download", "transcribe": "transcribe",
+                    "discover": "discover", "select": "select", "render": "render",
+                    "preview": "render"}
 
 
 def text_converter(path, options, log=None):
@@ -348,12 +354,27 @@ def validate_segments(segments, duration):
 
 def run_project(path, action="all", preview=False, pick=None, resume=True, progress=None):
     """Prepare candidates or render saved candidates; checkpoint every successful clip."""
+    # Log lines written during this run carry the project id (only this run:
+    # a CLI batch runs several projects in one process).
+    with applog.bound(project_id=Path(path).resolve().name):
+        return _run_project(path, action, preview, pick, resume, progress)
+
+
+def _run_project(path, action, preview, pick, resume, progress):
     path = Path(path).resolve()
     state = read_project(path)
     options = validate_options(state["options"])
     if action not in {"all", "prepare", "render"}:
         raise ValueError("Unknown project action.")
+    current = {"name": None, "started": time.time()}
+    applog.info("job.run", f"{action}{' preview' if preview else ''} started in worker",
+                action=action)
+
     def stage(name):
+        finish_stage()
+        current["name"], current["started"] = name, time.time()
+        applog.info(STAGE_OPERATIONS.get(name.split()[0], "stage"),
+                    f"{name} started", stage=name, event="started")
         state.update(status="running", stage=name, error=None,
                      progress={"stage": name, "done": 0, "total": 0,
                                "detail": ""})
@@ -361,6 +382,14 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
         print(f"[{state['id']}] {name}", flush=True)
         if progress:
             progress(name)
+
+    def finish_stage():
+        if current["name"]:
+            applog.info(STAGE_OPERATIONS.get(current["name"].split()[0], "stage"),
+                        f"{current['name']} completed", stage=current["name"],
+                        event="completed",
+                        seconds=round(time.time() - current["started"], 2))
+        current["name"] = None
 
     def transcribe_progress(done, total):
         state["progress"] = {"stage": "transcribe", "done": int(done),
@@ -702,8 +731,15 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                 sections.cleanup_sections(path)
             state.update(status="review" if preview else "complete", stage="preview ready" if preview else "complete")
         save_project(path, state)
+        finish_stage()
+        applog.info("job.run", f"{action} finished: {state['status']}",
+                    outputs=len(state.get("last_outputs") or []) or None)
         return state
     except (Exception, SystemExit) as exc:
+        applog.error(STAGE_OPERATIONS.get(str(current["name"] or "").split(" ")[0], "stage"),
+                     f"{current['name'] or 'job'} failed", exc=exc,
+                     stage=current["name"], event="failed",
+                     seconds=round(time.time() - current["started"], 2))
         state.update(status="failed", error=str(exc), stage=state.get("stage", "failed"))
         save_project(path, state)
         raise

@@ -187,7 +187,7 @@ class FakeChild:
     """Stands in for the chopify.py child process."""
     code = 0
 
-    def __init__(self, cmd, cwd=None, stdin=None, stdout=None, stderr=None):
+    def __init__(self, cmd, cwd=None, stdin=None, stdout=None, stderr=None, **kwargs):
         stdout.write("child output\n")
         stdout.flush()
 
@@ -233,7 +233,7 @@ def test_job_log_is_appended_per_run(tmp_path, monkeypatch):
     import subprocess
 
     class Child:
-        def __init__(self, cmd, cwd=None, stdin=None, stdout=None, stderr=None):
+        def __init__(self, cmd, cwd=None, stdin=None, stdout=None, stderr=None, **kwargs):
             stdout.write("child output\n")
             stdout.flush()
 

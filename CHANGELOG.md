@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI judgments are saved one by one (atomic, locked), so a stopped run
   continues where it stopped.
 
+### Fixed
+- Studio "Find clips" did nothing: the hidden live-recording "Max hours" field
+  (min 0.1, step 0.5, default 12) was invalid, so the browser blocked the form
+  without a message or request. The step is now 0.1 and the form no longer
+  depends on hidden recording options.
+- Check source and downloads now show yt-dlp's real reason (e.g. "This video
+  is unavailable") instead of a generic message.
+
+### Added (diagnostics)
+- Structured JSON-lines logs in `logs/` (request, project, job, stage ids,
+  tracebacks; rotated; secrets redacted) and `python applog.py` to read them.
+- Request IDs on every Studio response; unexpected errors answer HTTP 500
+  with the request ID instead of a dropped connection.
+- Find clips: duplicate-click guard, "Submitting..." state, time limits,
+  connection-lost banner, project status panel (now / last done / progress,
+  error and what to do). Projects whose job cannot be queued are marked
+  failed, never left waiting.
+
 ### Changed
 - Hindi/Hinglish YouTube metadata: English, Devanagari, repetitive or copied
   AI titles/descriptions are retried with a Hinglish instruction and otherwise

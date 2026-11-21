@@ -14,6 +14,34 @@ winget install Gyan.FFmpeg
 `--no-preflight` bypasses checks; it does not install missing dependencies.
 For Studio, open the Job log for subprocess errors.
 
+## Diagnostic logs
+
+Studio and every processing job write structured logs (one JSON object per
+line) to `logs/chopify-YYYY-MM-DD.jsonl` in the Chopify folder (or
+`$CHOPIFY_LOG_DIR`). Each line has the time, level, project ID, job ID,
+request ID, stage, operation, message and, for unexpected errors, the full
+traceback. Files roll over at 10 MB and are kept for 14 days. Tokens, client
+secrets and authorization codes are removed before anything is written.
+
+Read them without opening files:
+
+```
+python applog.py --errors            # recent warnings and errors
+python applog.py --project ID -n 200 # everything for one project
+python applog.py --request ID --traceback
+```
+
+An error shown in Studio that ends with "(request abc123...)" can be looked
+up with `--request`. Each project's `job.log` still holds the full output of
+its jobs.
+
+## Find clips does nothing
+
+Fixed: a hidden live-recording field had an invalid default and silently
+blocked the form. If clicking **Find clips** ever shows no "Submitting..."
+message, reload the page (Ctrl+F5) so the browser loads the current Studio
+files, and check `python applog.py --errors`.
+
 ## Studio says connection lost
 
 Keep `python dashboard.py` running. Use its exact `http://127.0.0.1:PORT` address;

@@ -1627,13 +1627,18 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
         transcript = json.loads((workdir / "transcript.json").read_text(
             encoding="utf-8-sig"))
     if highlights:
+        import applog
         import highlights as highlight_stage
-        deduped, highlight_info = highlight_stage.run(
-            workdir, deduped, discovery, transcript, model=llm,
-            provider_name=llm_provider,
-            host=None if host == OLLAMA_HOST else host,
-            embed_model=embed_model, max_clips=max_clips,
-            provider=judge_provider)
+        with applog.step("ai.judge", "AI judging", candidates=len(deduped)):
+            deduped, highlight_info = highlight_stage.run(
+                workdir, deduped, discovery, transcript, model=llm,
+                provider_name=llm_provider,
+                host=None if host == OLLAMA_HOST else host,
+                embed_model=embed_model, max_clips=max_clips,
+                provider=judge_provider)
+        applog.info("ai.judge", f"AI judge {highlight_info.get('status')}: "
+                    f"{highlight_info.get('judged')} of {highlight_info.get('shortlisted')} judged",
+                    reason=highlight_info.get("reason") or None)
         max_clips = highlight_info["cap"]
         if highlight_info["judged"]:
             mode = "llm"
@@ -1681,14 +1686,16 @@ def select(workdir, min_score=8.0, max_clips=None, preferred_len=None,
                     {"start": float(span[0]["start"]), "end": float(span[-1]["end"])},
                     text, words, language)
                 return after is not None and after >= before - SHORTEN_TOLERANCE
-        segments, stats["boundaries"] = boundaries.refine_segments(
-            segments, sentences, mode="auto", verify_shorter=verify,
-            duration=(discovery.get("source_duration")
-                      or (transcript or {}).get("duration")),
-            min_len=min_len, max_len=max_len, band=effective_band,
-            preferred_len=preferred_len, aspect=aspect,
-            score_window=(lambda a, b: index.score(a, b)[1]) if index else None,
-            make_hook=make_hook)
+        import applog
+        with applog.step("duration.refine", "Duration refinement", clips=len(segments)):
+            segments, stats["boundaries"] = boundaries.refine_segments(
+                segments, sentences, mode="auto", verify_shorter=verify,
+                duration=(discovery.get("source_duration")
+                          or (transcript or {}).get("duration")),
+                min_len=min_len, max_len=max_len, band=effective_band,
+                preferred_len=preferred_len, aspect=aspect,
+                score_window=(lambda a, b: index.score(a, b)[1]) if index else None,
+                make_hook=make_hook)
     _write_json(workdir / "segments.json", segments)
     _write_json(workdir / "selection.json", stats)
     return segments, mode

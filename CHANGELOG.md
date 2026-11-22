@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 2: five-source persistent scheduler
+- `scheduler.py`: SQLite queue with 5 source slots, waiting queue (live
+  first), separate ingest/analysis/AI/render pools (render 1, max 2), GPU
+  resource slot, leases with crash recovery and leftover-worker stop, retries
+  with backoff, independent cancellation that keeps finished clips, disk and
+  memory floors. `features.py` flags; Studio uses it by default.
+- Studio: Find clips / Export run through the scheduler; `/api/scheduler`
+  settings; status includes source slots.
+
 ### Phase 1 validation (live, Groq Free)
 - Groq health, `whisper-large-v3-turbo` / `whisper-large-v3` transcription and
   `gpt-oss-20b` strict JSON verified live on synthetic speech at $0; ledger

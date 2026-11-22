@@ -41,7 +41,18 @@ def _legacy_youtube_paths(monkeypatch, request):
         monkeypatch.setenv("CHOPIFY_YOUTUBE_DOWNLOADS", "1")
 
 
+@pytest.fixture(autouse=True)
+def _scheduler_flag(monkeypatch, request):
+    # The persistent scheduler (Phase 2) is on by default. Tests written for
+    # the legacy in-memory job lanes (still available with the flag off) run
+    # with it off; tests marked ``scheduler`` exercise the new default.
+    monkeypatch.setenv("CHOPIFY_FEATURE_SCHEDULER",
+                       "1" if request.node.get_closest_marker("scheduler") else "0")
+
+
 def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "scheduler: run with the Phase 2 persistent scheduler (the default)")
     config.addinivalue_line(
         "markers", "compliance_default: run with YouTube downloads at their real default (off)")
 

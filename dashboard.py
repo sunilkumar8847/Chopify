@@ -1,5 +1,6 @@
 """Chopify Studio: loopback browser UI with a serial, resumable project queue."""
 import argparse
+from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -18,6 +19,8 @@ import webbrowser
 import applog
 import automation
 import envconfig
+import features
+import scheduler as scheduler_mod
 import compliance
 import youtube_data
 import download_and_transcribe as dt
@@ -254,10 +257,36 @@ class Studio:
         self.recover = []          # processing jobs interrupted by a restart
         if self.settings.get()["processing_paused"]:
             self.jobs.pause("process")
+        # Phase 2: persistent five-source scheduler (feature flag "scheduler").
+        self.scheduler = None
+        if features.enabled("scheduler"):
+            self.scheduler = scheduler_mod.Scheduler(
+                self.root / ".scheduler.db", settings=scheduler_mod.load_settings(),
+                handlers={"ingest": self._task_ingest, "analysis": self._task_process,
+                          "render": self._task_process, "ai": self._task_ai},
+                disk_path=self.root, paused=self._stage_paused, on_finish=self._source_finished)
+        self.ai_jobs = {}          # Phase 6: ai task kinds -> callable(payload, cancel)
+        resumable = set()
+        if self.scheduler is not None:
+            resumable = {s["id"] for s in self.scheduler.status()["sources"]
+                         if s["state"] in ("active", "waiting")}
+            if resumable and not self.settings.get()["resume_after_restart"]:
+                for project_id in resumable:
+                    self.scheduler.cancel(project_id)
+                    self.events.add("recovery", "Studio restarted; press Retry to "
+                                    "continue this project.", project_id)
+                resumable = set()
         for path in self.root.glob("*/project.json"):
             try:
                 state = projects.read_project(path.parent)
                 changed = live.mark_interrupted(state)
+                if path.parent.name in resumable:
+                    # The persistent queue continues this project by itself.
+                    if state["status"] in {"queued", "running"}:
+                        state.update(status="queued", error=None,
+                                     stage="continuing after restart")
+                        projects.save_project(path.parent, state)
+                    continue
                 if state["status"] in {"queued", "running"} and state.get("last_action"):
                     self.recover.append(path.parent.name)
                 if state["status"] in {"queued", "running", "recording"}:
@@ -267,9 +296,83 @@ class Studio:
                     projects.save_project(path.parent, state)
             except (ValueError, OSError, KeyError):
                 continue
+        if self.scheduler is not None:
+            self.scheduler.start()
 
     def busy(self, project_id):
-        return self.jobs.busy(project_id)
+        return self.jobs.busy(project_id) or bool(
+            self.scheduler is not None and self.scheduler.busy(project_id))
+
+    # ---------------------------------------------- Phase 2 scheduler tasks
+    def _stage_paused(self, stage):
+        if stage in ("analysis", "render") and self.jobs.paused("process"):
+            return "Processing is paused."
+        return None
+
+    def _source_finished(self, project_id, state):
+        future = self.futures.get(project_id)
+        if future is not None and hasattr(future, "set_result") and not future.done():
+            future.set_result(state)
+
+    def _task_ingest(self, task, cancel, set_pid):
+        """Recorded videos: make sure the source is there before analysis."""
+        payload = task["payload"] or {}
+        path = projects.project_path(self.root, task["source_id"])
+        state = projects.read_project(path)
+        source = state["source"]
+        if not ingest.is_url(source) and not Path(source).expanduser().is_file():
+            error = f"Video file does not exist: {source}"
+            projects.update_project(path, lambda s: s.update(status="failed", error=error))
+            raise scheduler_mod.SchedulerError(error)
+        if payload.get("session"):
+            handler = self.ai_jobs.get("ingest:" + payload["session"])
+            if handler:
+                return handler(payload, cancel)
+        return {"source": "ok"}
+
+    def _task_process(self, task, cancel, set_pid):
+        """Analysis (prepare) and render run the existing worker, one child each."""
+        payload = task["payload"] or {}
+        project_id = task["source_id"]
+        path = projects.project_path(self.root, project_id)
+        self.scheduler.on_cancel(project_id, lambda: self._cancel_process(project_id))
+        code = self._run(path, payload.get("action", "prepare"), bool(payload.get("preview")),
+                         payload.get("pick"), on_child=lambda child: set_pid(child.pid))
+        if self.closing:
+            raise RuntimeError("Studio is closing.")
+        if project_id in self.cancelled or cancel.is_set():
+            raise scheduler_mod.Cancelled()
+        if code:
+            error = projects.read_project(path).get("error") or f"Worker exited with {code}."
+            exc = RuntimeError(error)
+            exc.retryable = False          # the same input fails the same way
+            raise exc
+        return {"code": 0}
+
+    def _task_ai(self, task, cancel, set_pid):
+        payload = task["payload"] or {}
+        handler = self.ai_jobs.get(payload.get("kind"))
+        if handler is None:
+            raise scheduler_mod.SchedulerError(f"Unknown AI task {payload.get('kind')}.")
+        return handler(payload, cancel)
+
+    def _enqueue_scheduled(self, project_id, path, state, action, preview, pick):
+        options = state.get("options") or {}
+        gpu = ["gpu"] if (options.get("transcriber") or "local") == "local" else []
+        tasks = []
+        if action in ("prepare", "all"):
+            tasks += [{"stage": "ingest", "payload": {"check": True}},
+                      {"stage": "analysis", "payload": {"action": "prepare"}, "resources": gpu}]
+        if action in ("all", "render"):
+            tasks.append({"stage": "render", "payload": {"action": "render", "preview": preview,
+                                                         "pick": pick}})
+        kind = "vod"                   # live sessions are submitted by live ingestion
+        future = Future()
+        self.futures[project_id] = future
+        info = self.scheduler.submit(project_id, kind, tasks, label=state.get("title"))
+        if info["state"] == "waiting":
+            projects.update_project(path, lambda s: s.update(stage=info["message"]))
+        return info
 
     # ------------------------------------------------------- automation
     def start_automation(self):
@@ -437,6 +540,7 @@ class Studio:
         settings = self.settings.get()
         return {
             "projects": rows,
+            "scheduler": self.scheduler.status() if self.scheduler is not None else None,
             "jobs": {"active": active, "recent": list(reversed(recent)),
                      "paused": {"process": self.jobs.paused("process"),
                                 "uploads": settings["uploads_paused"]}},
@@ -776,7 +880,8 @@ class Studio:
             raise ValueError("Select numbered clips, for example 1,3,5.")
         with self.lock:
             path = projects.project_path(self.root, project_id)
-            if self.jobs.busy(project_id, "process"):
+            if self.jobs.busy(project_id, "process") or (
+                    self.scheduler is not None and self.scheduler.busy(project_id)):
                 raise ValueError("This project is already queued or running.")
             if not after_recording and self.jobs.busy(project_id, "record"):
                 raise ValueError("Stop the recording before finding clips.")
@@ -805,6 +910,15 @@ class Studio:
                             f"{' - processing is paused' if self.jobs.paused('process') else ''}.",
                             project_id)
             self.cancelled.discard(project_id)
+            if self.scheduler is not None:
+                try:
+                    return self._enqueue_scheduled(project_id, path, state, action, preview,
+                                                   pick)
+                except scheduler_mod.SchedulerError as exc:
+                    projects.update_project(path, lambda s: s.update(
+                        status="failed" if state.get("status") != "review" else "review",
+                        error=str(exc)))
+                    raise ValueError(str(exc)) from exc
             job = self.jobs.submit("process", project_id, self._run, path, action,
                                    preview, pick, kind=action)
             job.on_cancel(lambda: self._cancel_process(project_id))
@@ -824,6 +938,15 @@ class Studio:
         """Cancel this project's queued or running processing/recording job."""
         path = projects.project_path(self.root, project_id)
         active = self.jobs.active(project_id)
+        if self.scheduler is not None and self.scheduler.busy(project_id):
+            running = any(t["state"] == "leased"
+                          for t in self.scheduler.source(project_id)["tasks"])
+            self.scheduler.cancel(project_id)
+            self.jobs.cancel_project(project_id)
+            if not running:
+                projects.update_project(path, lambda s: s.update(
+                    status="cancelled", stage="cancelled", error=None))
+            return {"cancelled": ["process"] + [job.lane for job in active]}
         if not active:
             raise ValueError("Nothing is queued or running for this project.")
         was_queued = {job.lane for job in active if job.state == "queued"}
@@ -910,7 +1033,7 @@ class Studio:
             projects.update_project(path, lambda s: s.update(
                 error=f"Recording saved, but processing did not start: {exc}"))
 
-    def _run(self, path, action, preview, pick):
+    def _run(self, path, action, preview, pick, on_child=None):
         # Background jobs have no one to answer prompts: --no-input keeps the
         # project's saved settings, and stdin=DEVNULL stops the child from
         # inheriting (and blocking on) the Studio terminal.
@@ -954,6 +1077,8 @@ class Studio:
                                              stdout=log, stderr=subprocess.STDOUT, env=env)
                     self.processes.add(child)
                     self.children[path.name] = child
+                if on_child:
+                    on_child(child)
                 code = child.wait()
                 with self.lock:
                     self.processes.discard(child)
@@ -1007,6 +1132,8 @@ class Studio:
                      log_tail=tail[-1500:] or None, **(ids or {"project_id": path.name}))
 
     def close(self):
+        if self.scheduler is not None:
+            self.scheduler.stopping.set()     # interrupted tasks resume after restart
         with self.lock:
             self.closing = True
             if self.upload_timer is not None:
@@ -1021,6 +1148,8 @@ class Studio:
             for child in list(self.processes):
                 child.terminate()
         self.jobs.shutdown()
+        if self.scheduler is not None:
+            self.scheduler.stop()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1231,6 +1360,12 @@ class Handler(BaseHTTPRequestHandler):
                                                     self.app.youtube_data()))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
+            if parts == ["api", "scheduler"]:
+                if self.app.scheduler is None:
+                    raise ValueError("The scheduler is turned off (feature flag).")
+                applog.info("scheduler.settings", "Scheduler settings changed")
+                self.app.scheduler.configure(body)
+                return self.send_json(self.app.scheduler.status())
             if parts[:2] == ["api", "ai"] and len(parts) == 3:
                 from ai import studio as ai_studio
                 action = parts[2]

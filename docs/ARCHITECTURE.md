@@ -71,6 +71,34 @@ publishing still needs the per-clip confirmation in Studio, and new uploads
 are private. Settings cannot enable automatic publishing (there is no such
 setting).
 
+## Upgrade Phase 2: persistent five-source scheduler
+
+`scheduler.py` (feature flag `scheduler`, on; `features.py`) replaces the
+in-memory "process" lane in Studio. State lives in `projects/.scheduler.db`
+(SQLite WAL), so the queue survives restarts.
+
+* **Sources**: a project (recorded video) or a live session. At most 5 are
+  active; more wait (live first, then oldest) up to `max_waiting` (20), then
+  are refused with a reason.
+* **Stages and pools**: `ingest` 5, `analysis` 2, `ai` 2, `render` 1 (max 2).
+  Each stage has its own workers, so a slow AI provider never blocks
+  ingestion. Tasks can need resources: local Whisper takes the single `gpu`
+  slot. Studio maps Find clips to `ingest -> analysis(prepare)` and Export to
+  `render`; both still run the unchanged `chopify.py` worker.
+* **Leases**: a task is leased for 60 s and renewed while it runs. On
+  restart, leases from the previous process are released, a worker child it
+  left behind is stopped (only if its command line is Chopify's), and the
+  task runs again; after 3 interrupted attempts it fails instead of looping.
+* **Retries**: per task `max_failures` with exponential backoff; worker
+  failures (same input, same error) are not retried.
+* **Cancel**: queued tasks never start, the running child is stopped, clips
+  already written stay. The slot frees immediately.
+* **Protection**: analysis/render wait while free disk < 5 GB or free RAM
+  < 1500 MB; processing pause applies to analysis/render only.
+* Settings: `%APPDATA%\Chopify\scheduler.json` or `POST /api/scheduler`
+  (`{"pools": {"render": 2}}`). Turn the scheduler off with
+  `CHOPIFY_FEATURE_SCHEDULER=0` to get the legacy one-at-a-time lane.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

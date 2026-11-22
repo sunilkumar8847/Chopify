@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 1 validation (live, Groq Free)
+- Groq health, `whisper-large-v3-turbo` / `whisper-large-v3` transcription and
+  `gpt-oss-20b` strict JSON verified live on synthetic speech at $0; ledger
+  accounting verified. New projects default to the Groq routes. See docs/AI.md.
+
 ### Configuration: `.env` for provider keys
 - New `envconfig.py`: the single `.env` loader (python-dotenv parser). Reads
   `.env` from the Chopify folder regardless of the working directory; OS

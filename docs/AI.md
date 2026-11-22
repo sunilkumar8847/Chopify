@@ -174,3 +174,24 @@ python -m ai.benchmark synthetic --routes gemini:gemini-3.5-flash-lite
 Reports go to `D:\Clipping\Chopify\_bench`. Routes that cannot run are listed
 as unavailable with the reason. Roman Hinglish is pending a reference
 recording.
+
+## Live validation (2026-11-22, Groq Free plan)
+
+Synthetic sample only: 28.8 s of Windows TTS English speech with a known
+script (`D:\Clipping\Chopify\_phase1v`). Every existing project's media came
+from YouTube, so none was sent to a cloud provider.
+
+| Route | WER vs script | Words | Language | Latency | Cost |
+|---|---|---|---|---|---|
+| `groq:whisper-large-v3-turbo` | 0.043 (numbers written as digits) | 70 | en | 1.4 s | $0 (free plan) |
+| `groq:whisper-large-v3` | 0.043 | 70 | en | 1.3 s | $0 |
+| `local:medium` (GPU) | 0.057 | 74 | en | 13.5 s | local |
+| `groq:openai/gpt-oss-20b` strict JSON judgement | valid, schema-conformant | 301 in / 332 out tokens | - | 0.9 s | $0 |
+
+Word timestamps monotonic on all routes; the ledger recorded each request
+(ok, free, audio minutes, tokens). Live limits seen from Groq's headers for
+`gpt-oss-20b`: 1000 requests/day, 8000 tokens/minute. Hindi and Roman
+Hinglish cloud accuracy remain unmeasured until an authorized recording is
+available. After validation the default routes for **new** projects are
+`groq:whisper-large-v3-turbo` (transcription) and `groq:openai/gpt-oss-20b`
+(text); existing projects keep their local settings; local fallback stays off.

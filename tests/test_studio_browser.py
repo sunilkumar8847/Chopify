@@ -462,3 +462,62 @@ def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
                  timeout=10)
     assert browser.evaluate("document.querySelector('#detect-record').hidden")
     assert not [c for c in browser.console if c["level"] == "error" and "400" not in c.get("text", "")]
+
+
+# ------------------------------------------------------- Phase 1: AI panel
+
+def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, studio, monkeypatch):
+    from ai import gateway as ai_gateway
+    ai_gateway.reset()
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    open_studio(browser, studio)
+    browser.evaluate("showDashboard()")
+    browser.wait("document.querySelectorAll('#ai-providers [data-provider]').length === 5",
+                 timeout=15)
+    form = "document.querySelector('#ai-mode-form')"
+    assert browser.evaluate(f"{form}.elements.free_only.checked") is True
+    assert browser.evaluate(f"{form}.elements.paid_calls.checked") is False
+    assert browser.evaluate(f"{form}.elements.local_fallback.checked") is False
+    assert browser.evaluate("document.querySelector('#ai-summary').textContent") == "FREE-ONLY"
+    groq = "document.querySelector('[data-provider=\"groq\"]')"
+    assert "blocked" in browser.evaluate(f"{groq}.querySelector('.ai-privacy').textContent")
+    key = "gsk_" + "Q7w8E9r0" * 6
+    browser.evaluate(f"{groq}.querySelector('[data-ai-key]').value = {json.dumps(key)};"
+                     f"{groq}.querySelector('[data-ai-save-key]').click()")
+    browser.wait(f"{groq}.textContent.includes('…{key[-4:]}')", timeout=10)
+    assert browser.evaluate(f"{groq}.querySelector('[data-ai-key]').value") == ""
+    page = browser.evaluate("document.documentElement.outerHTML")
+    assert key not in page and key[:12] not in page
+    answer = browser.evaluate("fetch('/api/ai').then(r => r.text())", await_promise=True)
+    assert "…" not in answer and key not in answer and key[-4:] in answer
+    # ZDR confirmation needs the tick box first.
+    browser.evaluate(f"{groq}.querySelector('[data-ai-confirm]').click()")
+    browser.wait("document.querySelector('#notice').textContent.includes('Tick the box')")
+    browser.evaluate(f"{groq}.querySelector('[data-zdr-check]').click();"
+                     f"{groq}.querySelector('[data-ai-confirm]').click()")
+    browser.wait(f"document.querySelector('[data-provider=\"groq\"] .ai-privacy')"
+                 ".dataset.state === 'allowed'", timeout=10)
+    browser.evaluate("document.querySelector('[data-ai-revoke=\"groq:zdr\"]').click()")
+    browser.wait(f"document.querySelector('[data-provider=\"groq\"] .ai-privacy')"
+                 ".dataset.state === 'blocked'", timeout=10)
+    usage = browser.evaluate("document.querySelector('#ai-usage-rows').textContent")
+    assert "No AI requests yet" in usage
+    assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
+    from ai import secrets
+    secrets.remove("groq")
+
+
+def test_no_new_native_dialogs():
+    """Phase 1 adds no alert/confirm/prompt. Three confirm() calls predate it
+    (cancel job x2, stop monitoring); Phase 3 replaces them with modals."""
+    from pathlib import Path
+    import re
+    source = (Path(__file__).parent.parent / "assets" / "studio" / "app.js").read_text(
+        encoding="utf-8")
+    calls = re.findall(r"(?<![\w.])(alert|confirm|prompt)\s*\(\s*\"([^\"]*)", source)
+    assert sorted(calls) == sorted([
+        ("confirm", "Cancel this project's job? A recording is stopped and kept."),
+        ("confirm", "Cancel this project's job? A recording is stopped and kept."),
+        ("confirm", "Stop monitoring this channel?")])
+    ai_part = source[source.index("// ------------------------------------------------------------------ AI"):]
+    assert not re.search(r"(?<![\w.])(alert|confirm|prompt)\s*\(", ai_part)

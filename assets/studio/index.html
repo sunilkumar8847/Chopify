@@ -191,6 +191,41 @@
             </form>
           </section>
         </div>
+        <section id="ai-panel" class="panel dash-panel">
+          <div class="panel-title">
+            <h2>AI</h2>
+            <span id="ai-summary">FREE-ONLY</span>
+          </div>
+          <form id="ai-mode-form" class="dash-settings ai-mode">
+            <label class="check"><input type="checkbox" name="free_only" /> Free-only mode
+              (unknown prices count as paid)</label>
+            <label class="check"><input type="checkbox" name="paid_calls" /> Allow paid AI calls
+              within the budgets below</label>
+            <label>Daily paid budget (USD)<input name="daily_paid_budget_usd" type="number"
+                min="0" max="10000" step="0.01" /></label>
+            <label>Monthly paid budget (USD)<input name="monthly_paid_budget_usd" type="number"
+                min="0" max="10000" step="0.01" /></label>
+            <label class="check"><input type="checkbox" name="local_fallback" /> Local fallback
+              when a cloud provider is down (never to a paid provider)</label>
+            <div id="ai-routes" class="ai-routes"></div>
+            <button type="submit">Save AI settings</button>
+          </form>
+          <p id="ai-result" class="hint" role="status" hidden></p>
+          <div id="ai-providers" class="ai-providers"></div>
+          <h3 class="ai-subtitle">Usage (last 30 days)</h3>
+          <div class="table-wrap">
+            <table class="dash-table ai-usage">
+              <thead>
+                <tr>
+                  <th>Provider</th><th>Model</th><th>Capability</th><th>Requests</th>
+                  <th>Failed / blocked</th><th>Audio min</th><th>Tokens in / out</th>
+                  <th>Cost</th><th>Avg latency</th><th>Free</th>
+                </tr>
+              </thead>
+              <tbody id="ai-usage-rows"></tbody>
+            </table>
+          </div>
+        </section>
         <section id="storage-panel" class="panel dash-panel">
           <div class="panel-title">
             <h2>Storage</h2>

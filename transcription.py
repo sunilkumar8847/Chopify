@@ -52,6 +52,12 @@ def plan(options):
     model = options.get("whisper_model") or spec["model"]
     decode = {k: spec[k] for k in ("beam", "vad", "batch")}
     captions = spec["captions"] if (options.get("subtitles") or "off") == "auto" else "off"
+    transcriber = options.get("transcriber") or "local"
+    if transcriber != "local":
+        # Cloud route through the AI Gateway: the route string is the model
+        # identity in cache keys, so cloud and local results never mix.
+        return {"profile": profile, "model": transcriber, "decode": decode,
+                "device": "cloud", "captions": captions}
     return {"profile": profile, "model": model, "decode": decode,
             "device": options.get("device") or "auto", "captions": captions}
 
@@ -71,6 +77,9 @@ def cache_key_parts(settings):
 
 def estimate(settings, duration, gpu_ok, url=True):
     """Human estimate of how this project will be transcribed."""
+    if settings["device"] == "cloud":
+        return {"mode": "cloud", "device": "cloud", "whisper_minutes": None,
+                "text": f"Cloud transcription through the AI Gateway ({settings['model']})"}
     on_gpu = gpu_ok and settings["device"] in {"auto", "cuda"}
     where = "GPU" if on_gpu else "CPU"
     whole = None
@@ -106,6 +115,10 @@ class Runtime:
     def __init__(self, settings, log=print):
         self.settings = settings
         self.log = log
+        if settings["device"] == "cloud":
+            self.device, self.compute, self.warning = "cloud", "cloud", None
+            self._model = None
+            return
         self.device, self.compute, self.warning = dt.resolve_device(settings["device"])
         if self.warning:
             log(f"WARNING: {self.warning}")

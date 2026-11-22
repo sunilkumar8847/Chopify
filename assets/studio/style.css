@@ -1631,3 +1631,44 @@ button.danger {
   border-left: 3px solid var(--danger, #ffb9a8);
   padding-left: 0.6rem;
 }
+
+.ai-mode {
+  display: grid;
+  gap: 0.5rem;
+}
+.ai-routes label {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(8rem, 1fr) minmax(10rem, 2fr);
+  gap: 0.5rem;
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .ai-routes label {
+    grid-template-columns: 1fr;
+  }
+}
+.ai-providers {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+.ai-provider {
+  border: 1px solid var(--line, #444);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+}
+.ai-provider header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.ai-privacy[data-state="blocked"] {
+  color: var(--danger, #ffb9a8);
+}
+.ai-privacy[data-state="allowed"] {
+  color: var(--accent, #d4ef83);
+}
+.ai-subtitle {
+  font-size: 1rem;
+  margin: 0.75rem 0 0.25rem;
+}

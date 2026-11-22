@@ -151,7 +151,45 @@ class OllamaProvider(Provider):
         return vectors
 
 
-PROVIDERS = {"ollama": OllamaProvider}
+class GatewayProvider(Provider):
+    """Text generation through the AI Gateway (Phase 1).
+
+    ``model`` is a route such as "groq:openai/gpt-oss-20b"; an empty model
+    uses the AI settings' generate route. Judging, metadata and Hinglish
+    polishing call ``chat_json`` exactly as with Ollama.
+    """
+    name = "gateway"
+
+    def __init__(self, model, host=None, timeout=180):
+        super().__init__(model, host, timeout)
+
+    @property
+    def label(self):
+        return f"gateway:{self.model}"
+
+    def available(self):
+        if _disabled():
+            return False, "LLM judging is disabled (CHOPIFY_LLM_DISABLED)."
+        from ai import gateway
+        return gateway.get().precheck("generate", self.model or None)
+
+    def chat_json(self, system, user, schema=None):
+        from ai import gateway
+        from ai.base import AIError
+        try:
+            result = gateway.get().generate(system, user, schema=schema or {"type": "object"},
+                                            route=self.model or None)
+        except AIError as exc:
+            raise LLMError(str(exc)) from exc
+        if result.data is None:
+            raise LLMError("The model did not return valid JSON.")
+        return result.data
+
+    def embed(self, texts, model=None):
+        raise LLMError("Embeddings stay on the local Ollama model.")
+
+
+PROVIDERS = {"ollama": OllamaProvider, "gateway": GatewayProvider}
 
 
 def get_provider(name=None, model=None, host=None, timeout=180):

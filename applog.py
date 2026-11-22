@@ -52,6 +52,9 @@ _SECRETS = [
     (re.compile(r"\b1//[A-Za-z0-9._-]{10,}"), "[redacted-token]"),
     (re.compile(r"\bGOCSPX-[A-Za-z0-9_-]+"), "[redacted-secret]"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}"), "[redacted-key]"),          # Google API keys
+    (re.compile(r"\bgsk_[0-9A-Za-z]{20,}"), "[redacted-key]"),             # Groq
+    (re.compile(r"\bsk-or-v1-[0-9A-Za-z]{20,}"), "[redacted-key]"),        # OpenRouter
+    (re.compile(r"\bnvapi-[0-9A-Za-z_-]{20,}"), "[redacted-key]"),         # NVIDIA
     (re.compile(r"(?i)([?&](?:api_)?key=)[^&\s\"']+"), r"\1[redacted]"),
     (re.compile(r"(?i)(x-chopify-token\"?\s*[:=]\s*\"?)[A-Za-z0-9_-]{8,}"), r"\1[redacted]"),
 ]

@@ -1880,6 +1880,7 @@ function updateDashBadge(data) {
 }
 async function loadOverview() {
   renderOverview(await api("/api/overview"));
+  await loadAI().catch((error) => aiShow(`AI settings unavailable: ${error.message}`, true));
   await loadStorage().catch((error) =>
     showStorageResult(`Storage information unavailable: ${error.message}`, true),
   );
@@ -2176,3 +2177,187 @@ function renderClipCounts(detail) {
   if (c.previews) parts.push(`${c.previews} preview draft(s)`);
   out.textContent = parts.join(" · ");
 }
+
+// ------------------------------------------------------------------ AI
+const CAPABILITY_LABELS = {
+  transcribe: "Transcription",
+  generate: "Text & JSON (clip judging, titles)",
+  vision: "Image analysis",
+};
+function aiShow(text, error = false) {
+  const out = $("#ai-result");
+  out.hidden = false;
+  out.textContent = text;
+  out.classList.toggle("error", error);
+}
+function aiModelOptions(provider, capability, current) {
+  const models = (provider?.models || []).filter((m) =>
+    m.capabilities.includes(capability),
+  );
+  const ids = models.map((m) => m.id);
+  if (current && !ids.includes(current)) ids.push(current);
+  return ids
+    .map((id) => {
+      const m = models.find((x) => x.id === id);
+      const price = m ? ` · ${m.pricing}` : "";
+      return `<option value="${escapeHTML(id)}" ${id === current ? "selected" : ""}>${escapeHTML(id + price)}</option>`;
+    })
+    .join("");
+}
+function renderAI(data) {
+  state.ai = data;
+  const s = data.settings;
+  const form = $("#ai-mode-form");
+  form.elements.free_only.checked = s.free_only;
+  form.elements.paid_calls.checked = s.paid_calls;
+  form.elements.daily_paid_budget_usd.value = s.daily_paid_budget_usd;
+  form.elements.monthly_paid_budget_usd.value = s.monthly_paid_budget_usd;
+  form.elements.local_fallback.checked = s.local_fallback;
+  $("#ai-summary").textContent = s.free_only
+    ? "FREE-ONLY"
+    : s.paid_calls
+      ? `PAID ALLOWED · $${data.spent.day.toFixed(2)} TODAY`
+      : "PAID CALLS OFF";
+  const byName = Object.fromEntries(data.providers.map((p) => [p.name, p]));
+  $("#ai-routes").innerHTML = data.capabilities
+    .map((cap) => {
+      const route = s.routes[cap] || {};
+      const usable = data.providers.filter((p) =>
+        p.name === "openrouter"
+          ? cap !== "transcribe"
+          : p.name === "local"
+            ? cap !== "vision"
+            : p.models.some((m) => m.capabilities.includes(cap)),
+      );
+      const providerSelect = `<select data-route-provider="${cap}"><option value="">None</option>${usable
+        .map(
+          (p) =>
+            `<option value="${p.name}" ${p.name === route.provider ? "selected" : ""}>${escapeHTML(p.title)}</option>`,
+        )
+        .join("")}</select>`;
+      const chosen = byName[route.provider];
+      const modelField =
+        route.provider === "openrouter" || route.provider === "local" && cap === "generate"
+          ? `<input data-route-model="${cap}" value="${escapeHTML(route.model || "")}" placeholder="model id" />`
+          : `<select data-route-model="${cap}">${aiModelOptions(chosen, cap, route.model)}</select>`;
+      return `<label>${CAPABILITY_LABELS[cap]}${providerSelect}${modelField}</label>`;
+    })
+    .join("");
+  $("#ai-providers").innerHTML = data.providers
+    .map((p) => {
+      const key =
+        p.name === "local"
+          ? "No key needed"
+          : p.key.configured
+            ? `Key configured · …${escapeHTML(p.key.last4)} (${p.key.source === "environment" ? `from ${escapeHTML(p.key.env)}` : "stored encrypted"})`
+            : `No key${p.key.env ? ` (or set ${escapeHTML(p.key.env)})` : ""}`;
+      const health = p.health
+        ? `${p.health.ok ? "Healthy" : "Problem"}: ${escapeHTML(p.health.detail)} · ${relTime(p.health.checked)}`
+        : "Not checked yet";
+      const extra =
+        p.name === "groq"
+          ? `<label>Groq plan<select data-groq-billing><option value="unknown" ${p.settings.billing === "unknown" ? "selected" : ""}>Unknown (treated as paid)</option><option value="free_plan" ${p.settings.billing === "free_plan" ? "selected" : ""}>Free plan (no charges)</option><option value="paid" ${p.settings.billing === "paid" ? "selected" : ""}>Developer plan (paid)</option></select></label>
+             ${p.settings.zdr_confirmed_at ? `<p class="hint">Zero Data Retention confirmed ${relTime(p.settings.zdr_confirmed_at)}. <button type="button" class="link" data-ai-revoke="groq:zdr">Withdraw</button></p>` : `<label class="check"><input type="checkbox" data-zdr-check /> I turned on Zero Data Retention in Groq Console &gt; Settings &gt; Data Controls (Groq has no API to check this)</label><button type="button" data-ai-confirm="groq:zdr">Confirm for real recordings</button>`}`
+          : p.name === "gemini"
+            ? `<label>Gemini tier<select data-gemini-tier><option value="free" ${p.settings.tier === "free" ? "selected" : ""}>Free (synthetic test data only)</option><option value="paid" ${p.settings.tier === "paid" ? "selected" : ""}>Paid</option></select></label>`
+            : "";
+      return `<article class="ai-provider" data-provider="${p.name}">
+        <header><strong>${escapeHTML(p.title)}</strong>
+          <label class="check"><input type="checkbox" data-ai-enabled ${p.enabled ? "checked" : ""} ${p.name === "local" ? "" : ""}/> Enabled</label></header>
+        <p class="hint">${escapeHTML(p.role)}</p>
+        <p class="ai-privacy" data-state="${escapeHTML(p.privacy.real_media)}">Privacy: real recordings ${escapeHTML(p.privacy.real_media)} — ${escapeHTML(p.privacy.detail)} <a href="${escapeHTML(p.terms_url || "#")}" target="_blank" rel="noopener">terms</a></p>
+        <p class="hint">${key}</p>
+        ${p.name === "local" ? "" : `<div class="dash-inline"><input type="password" autocomplete="off" data-ai-key placeholder="Paste API key" /><button type="button" data-ai-save-key>Save key</button>${p.key.configured && p.key.source === "stored" ? `<button type="button" data-ai-remove-key>Remove key</button>` : ""}</div>`}
+        ${extra}
+        <div class="dash-inline"><button type="button" data-ai-health>Check health</button><small>${health}</small></div>
+      </article>`;
+    })
+    .join("");
+  $("#ai-usage-rows").innerHTML = data.usage.length
+    ? data.usage
+        .map(
+          (u) =>
+            `<tr><td>${escapeHTML(u.provider)}</td><td>${escapeHTML(u.model)}</td><td>${escapeHTML(u.capability)}</td><td>${u.requests}</td><td>${u.failed} / ${u.blocked}</td><td>${u.audio_minutes}</td><td>${u.input_tokens} / ${u.output_tokens}</td><td>$${Number(u.cost_usd).toFixed(4)}</td><td>${u.avg_latency_ms ?? "–"} ms</td><td>${u.free ? "free" : "paid"}</td></tr>`,
+        )
+        .join("")
+    : '<tr><td colspan="10" class="muted">No AI requests yet.</td></tr>';
+}
+async function loadAI() {
+  renderAI(await api("/api/ai"));
+}
+async function aiPost(action, body) {
+  const result = await api(`/api/ai/${action}`, body, { timeout: 60000 });
+  if (result.providers) renderAI(result);
+  else await loadAI();
+  return result;
+}
+$("#ai-mode-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const routes = {};
+    for (const cap of state.ai.capabilities) {
+      const provider = form.querySelector(`[data-route-provider="${cap}"]`).value || null;
+      const model = form.querySelector(`[data-route-model="${cap}"]`)?.value || null;
+      routes[cap] = { provider, model: provider ? model : null };
+    }
+    const providers = {};
+    for (const card of document.querySelectorAll("#ai-providers [data-provider]")) {
+      const name = card.dataset.provider;
+      providers[name] = { enabled: card.querySelector("[data-ai-enabled]").checked };
+      const billing = card.querySelector("[data-groq-billing]");
+      if (billing) providers[name].billing = billing.value;
+      const tier = card.querySelector("[data-gemini-tier]");
+      if (tier) providers[name].tier = tier.value;
+    }
+    await aiPost("settings", {
+      free_only: form.elements.free_only.checked,
+      paid_calls: form.elements.paid_calls.checked,
+      daily_paid_budget_usd: Number(form.elements.daily_paid_budget_usd.value) || 0,
+      monthly_paid_budget_usd: Number(form.elements.monthly_paid_budget_usd.value) || 0,
+      local_fallback: form.elements.local_fallback.checked,
+      routes,
+      providers,
+    });
+    aiShow("AI settings saved. New projects use these routes; existing projects keep theirs.");
+  }),
+);
+$("#ai-routes").addEventListener("change", (event) => {
+  const cap = event.target.dataset.routeProvider;
+  if (!cap) return;
+  state.ai.settings.routes[cap] = { provider: event.target.value || null, model: null };
+  renderAI(state.ai);
+});
+$("#ai-providers").addEventListener(
+  "click",
+  safe(async (event) => {
+    const card = event.target.closest("[data-provider]");
+    if (!card) return;
+    const provider = card.dataset.provider;
+    if (event.target.matches("[data-ai-save-key]")) {
+      const input = card.querySelector("[data-ai-key]");
+      const key = input.value.trim();
+      input.value = "";
+      if (!key) throw new Error("Paste the API key first.");
+      await aiPost("key", { provider, key });
+      aiShow(`${provider}: key saved (encrypted). Only its last 4 characters are shown.`);
+    } else if (event.target.matches("[data-ai-remove-key]")) {
+      await aiPost("key-remove", { provider });
+      aiShow(`${provider}: stored key removed.`);
+    } else if (event.target.matches("[data-ai-health]")) {
+      const result = await aiPost("health", { provider });
+      aiShow(`${provider}: ${result.ok ? "healthy" : "problem"} — ${result.detail}`, !result.ok);
+    } else if (event.target.matches("[data-ai-confirm]")) {
+      if (!card.querySelector("[data-zdr-check]")?.checked)
+        throw new Error("Tick the box first: confirm you turned on Zero Data Retention.");
+      const [p, what] = event.target.dataset.aiConfirm.split(":");
+      await aiPost("confirm", { provider: p, what, confirm: true });
+      aiShow("Groq Zero Data Retention confirmed. Real recordings may now be sent to Groq.");
+    } else if (event.target.matches("[data-ai-revoke]")) {
+      const [p, what] = event.target.dataset.aiRevoke.split(":");
+      await aiPost("confirm", { provider: p, what, revoke: true });
+      aiShow("Confirmation withdrawn: real recordings are no longer sent there.");
+    }
+  }),
+);

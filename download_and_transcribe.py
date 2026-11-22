@@ -168,6 +168,11 @@ def enable_cuda_dlls(prefix=None, environ=None):
 
 
 def _load_model(model_size, device, compute_type):
+    if device == "cloud":
+        # AI Gateway route such as "groq:whisper-large-v3-turbo" (Phase 1).
+        from ai.compat import CloudWhisperModel
+        print(f"Transcribing through the AI Gateway: {model_size}", flush=True)
+        return CloudWhisperModel(model_size)
     if device != "cpu":
         enable_cuda_dlls()
     from faster_whisper import WhisperModel

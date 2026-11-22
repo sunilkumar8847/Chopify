@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### AI Gateway (Phase 1)
+- `ai/` package: one gateway for transcription, text/JSON and vision with
+  interchangeable providers (local faster-whisper + Ollama, Groq, OpenRouter,
+  Gemini, NVIDIA trial), normalized results, retries (backoff, Retry-After),
+  quota cooldowns, request IDs and a usage ledger (SQLite, no content).
+- Policy: free-only by default, paid calls off, $0 budgets, unknown prices
+  treated as paid, no automatic paid fallback, optional local fallback. Real
+  recordings only to providers whose terms allow it: Groq after confirming
+  Zero Data Retention, OpenRouter with zdr + data_collection: deny and no
+  fallbacks, Gemini free and NVIDIA trial synthetic-only.
+- Keys stored with DPAPI or environment variables, shown only as the last 4
+  characters; provider key formats redacted from logs.
+- Studio dashboard: AI panel (providers, keys, privacy, health, routes,
+  budgets) and AI usage table.
+- Existing judging, metadata, Hinglish polishing and transcription use the
+  gateway through `llm_provider: gateway` and `transcriber: provider:model`;
+  saved projects keep their local settings.
+- `python -m ai.benchmark` (transcription, judging, synthetic). See docs/AI.md.
+
 ### Compliance (Phase 0.1)
 - Feature-level YouTube capabilities instead of one blanket block. Check
   source works again through the official Data API (`videos.list`: title,

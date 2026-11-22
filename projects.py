@@ -52,7 +52,10 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    # Speed profile and subtitle-first transcripts. These
                    # defaults keep saved projects exactly as they were;
                    # new projects get NEW_PROJECT_DEFAULTS.
-                   "profile": "accurate", "subtitles": "off"}
+                   "profile": "accurate", "subtitles": "off",
+                   # Phase 1: "local" (faster-whisper) or an AI Gateway route
+                   # such as "groq:whisper-large-v3-turbo".
+                   "transcriber": "local"}
 
 # What a project created today starts with (unless the caller chose).
 # whisper_model None means "the profile's model"; device auto picks the GPU
@@ -147,6 +150,15 @@ def validate_options(options):
         raise ValueError("subtitles must be auto or off.")
     if result["whisper_model"] == "":
         result["whisper_model"] = None
+    if result["transcriber"] is None:
+        result["transcriber"] = "local"
+    if result["transcriber"] != "local":
+        from ai import registry
+        from ai.compat import is_cloud_route
+        provider, _, model = str(result["transcriber"]).partition(":")
+        if (not is_cloud_route(result["transcriber"]) or provider not in registry.REGISTRY
+                or not registry.REGISTRY[provider].catalogue_supports("transcribe", model)):
+            raise ValueError("transcriber must be local or a provider:model that can transcribe.")
     if result["search"] and result["semantic"]:
         raise ValueError("Choose keyword search or semantic search, not both.")
     centers = result["centers"]
@@ -310,6 +322,26 @@ def project_path(root, project_id):
     return Path(root) / project_id
 
 
+def ai_defaults(options):
+    """New projects follow the AI settings' routes (recorded per project, so a
+    later change of settings never re-transcribes or re-judges old projects)."""
+    options = options or {}
+    try:
+        from ai import policy
+        routes = policy.load().get("routes") or {}
+    except Exception:                       # noqa: BLE001 - settings unreadable: local
+        return {}
+    out = {}
+    talk = routes.get("transcribe") or {}
+    if "transcriber" not in options and talk.get("provider") not in (None, "local"):
+        out["transcriber"] = f"{talk['provider']}:{talk['model']}"
+    text = routes.get("generate") or {}
+    if ("llm_provider" not in options and "llm" not in options
+            and text.get("provider") not in (None, "local")):
+        out.update(llm_provider="gateway", llm=f"{text['provider']}:{text['model']}")
+    return out
+
+
 def create_project(root, source, options):
     project_id = uuid.uuid4().hex[:12]
     return init_project(project_path(root, project_id), source, options, project_id)
@@ -318,7 +350,7 @@ def create_project(root, source, options):
 def init_project(path, source, options, project_id=None):
     if not isinstance(source, str) or not source.strip() or len(source) > 8000:
         raise ValueError("Provide a video path or URL.")
-    options = validate_options({**NEW_PROJECT_DEFAULTS, **{
+    options = validate_options({**NEW_PROJECT_DEFAULTS, **ai_defaults(options), **{
         k: v for k, v in (options or {}).items()
         if not (k in NEW_PROJECT_DEFAULTS and v is None)}})
     source = source.strip()

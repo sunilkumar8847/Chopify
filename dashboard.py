@@ -1109,6 +1109,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Use the 127.0.0.1 Studio address."}, 403)
         try:
             parts = unquote(urlsplit(self.path).path).strip("/").split("/")
+            if parts == ["api", "ai"]:
+                from ai import studio as ai_studio
+                return self.send_json(ai_studio.overview())
             if parts == ["api", "storage"]:
                 return self.send_json(self.app.storage_overview())
             if len(parts) == 4 and parts[:2] == ["api", "storage"] and parts[3] == "plan":
@@ -1225,6 +1228,32 @@ class Handler(BaseHTTPRequestHandler):
                                                     self.app.youtube_data()))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
+            if parts[:2] == ["api", "ai"] and len(parts) == 3:
+                from ai import studio as ai_studio
+                action = parts[2]
+                provider = body.get("provider")
+                applog.info("ai.settings", f"AI settings: {action}",
+                            provider=provider if isinstance(provider, str) else None)
+                if action == "settings":
+                    ai_studio.apply(body)
+                elif action == "key":
+                    status = ai_studio.set_key(provider, body.get("key"))
+                    return self.send_json({"provider": provider, "key": status})
+                elif action == "key-remove":
+                    return self.send_json({"provider": provider,
+                                           "key": ai_studio.remove_key(provider)})
+                elif action == "health":
+                    from ai import gateway as ai_gateway
+                    if not isinstance(provider, str):
+                        raise ValueError("Choose a provider.")
+                    return self.send_json(ai_gateway.get().health(provider))
+                elif action == "confirm":
+                    if body.get("confirm") is not True and not body.get("revoke"):
+                        raise ValueError("Confirmation is required.")
+                    ai_studio.confirm(provider, body.get("what"), bool(body.get("revoke")))
+                else:
+                    return self.send_json({"error": "Not found."}, 404)
+                return self.send_json(ai_studio.overview())
             if parts == ["api", "storage", "cleanup"]:
                 project_id = body.get("project_id")
                 applog.info("storage.request", "Cleanup requested in Studio",

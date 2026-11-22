@@ -299,3 +299,61 @@ def _made_project(tmp_path, monkeypatch, fast):
     projects.run_project(path, action="prepare")
     assert projects.read_json(path / "transcript.json")["transcript_source"] == "youtube_automatic"
     return path, calls
+
+
+# ------------------------------------------------ Phase 0 review additions
+
+def test_source_validation_rejects_youtube_urls_while_off(tmp_path, monkeypatch):
+    local = tmp_path / "clip.mp4"
+    local.write_bytes(b"x")
+    for url in URLS:
+        assert dashboard.source_problem(url) == compliance.MESSAGE, url
+        assert dashboard.source_problem(f"  {url}  ") == compliance.MESSAGE
+    assert dashboard.source_problem("https://vimeo.com/123") is None
+    assert dashboard.source_problem(str(local)) is None, "local files still validate"
+    assert "does not exist" in dashboard.source_problem(str(tmp_path / "missing.mp4"))
+    monkeypatch.setenv(compliance.ENV, "1")
+    assert dashboard.source_problem(URLS[0]) is None, "switch on: accepted as before"
+
+
+def test_default_is_off_with_neither_file_nor_variable(monkeypatch):
+    monkeypatch.delenv(compliance.ENV, raising=False)
+    assert not compliance._config_file().exists()
+    assert compliance.youtube_downloads_allowed() is False
+    assert compliance.status() == {"youtube_downloads": False, "message": compliance.MESSAGE}
+
+
+@pytest.mark.parametrize("content", [
+    b"", b"{broken", b"[true]", b"true", b"null", b'"youtube_downloads"',
+    b'{"youtube_downloads": 1}', b'{"youtube_downloads": "true"}',
+    b'{"youtube_downloads": [true]}', b'{"YOUTUBE_DOWNLOADS": true}',
+    b"\xff\xfe\x00{", "{\"youtube_downloads\": true".encode()])
+def test_malformed_config_fails_safely_with_the_restriction_on(content):
+    path = compliance._config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    assert compliance.youtube_downloads_allowed() is False
+    with pytest.raises(compliance.YouTubeBlocked):
+        compliance.require(URL, "test")
+    assert compliance.status()["youtube_downloads"] is False
+
+
+def test_config_path_that_is_a_folder_fails_safely():
+    path = compliance._config_file()
+    path.mkdir(parents=True, exist_ok=True)
+    assert compliance.youtube_downloads_allowed() is False
+
+
+@pytest.mark.parametrize("value,allowed", [("", False), ("0", False), ("false", False),
+                                           ("no", False), ("maybe", False), ("1", True),
+                                           ("TRUE", True), (" on ", True)])
+def test_environment_values(monkeypatch, value, allowed):
+    monkeypatch.setenv(compliance.ENV, value)
+    assert compliance.youtube_downloads_allowed() is allowed
+
+
+def test_private_probe_helper_is_guarded_too():
+    run, calls = runner_spy()
+    with pytest.raises(compliance.YouTubeBlocked):
+        ingest._probe_url(URL, run)
+    assert calls == []

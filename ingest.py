@@ -223,6 +223,7 @@ def _probe_local(path, run=None):
 
 
 def _probe_url(url, run=None):
+    compliance.require(url, "metadata probe")   # also guarded by probe_source
     run = run or _run
     fallback = {
         "source": url, "url": True, "title": url, "duration": None,

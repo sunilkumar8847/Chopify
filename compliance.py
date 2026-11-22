@@ -70,9 +70,10 @@ def youtube_downloads_allowed():
         return value.strip().lower() in {"1", "true", "yes", "on"}
     try:
         data = json.loads(_config_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError):        # missing, unreadable, not UTF-8, not JSON
         return False
-    return data.get("youtube_downloads") is True
+    # Anything but a JSON object with a literal true keeps the restriction.
+    return isinstance(data, dict) and data.get("youtube_downloads") is True
 
 
 def blocked(url):

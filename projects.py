@@ -446,6 +446,40 @@ def validate_segments(segments, duration):
     return result
 
 
+def observe_scenes(path, state, stage=None):
+    """Phase 4 (observation only): label gameplay / breaks in the source video.
+
+    Writes scenes.json and a summary in project.json; nothing is cut. A
+    failure never stops the project.
+    """
+    import features
+    if not features.enabled("scene_detection"):
+        return None
+    try:
+        data = read_json(path / "transcript.json")
+        video = Path(data.get("video") or "")
+        if not video.is_file() or video.suffix.lower() not in ingest.VIDEO_EXTS:
+            return None
+        import scenes
+        key = f"{scenes.VERSION}:{file_identity(video)}"
+        if (state.get("cache") or {}).get("scenes") == key and (path / "scenes.json").exists():
+            return state.get("scenes")
+        if stage:
+            stage("scenes")
+        result = scenes.analyze(video, out=path / "scenes.json")
+        state["scenes"] = {**result["summary"], "mode": result["mode"],
+                           "count": len(result["scenes"])}
+        state.setdefault("cache", {})["scenes"] = key
+        save_project(path, state)
+        applog.info("scenes.done", "Scenes classified (observation only)",
+                    gameplay_share=result["summary"]["gameplay_share"],
+                    scenes=len(result["scenes"]))
+        return state["scenes"]
+    except Exception as exc:              # noqa: BLE001 - observation must not break a run
+        applog.warning("scenes.failed", f"Scene classification skipped: {exc}")
+        return None
+
+
 def run_project(path, action="all", preview=False, pick=None, resume=True, progress=None):
     """Prepare candidates or render saved candidates; checkpoint every successful clip."""
     # Log lines written during this run carry the project id (only this run:
@@ -737,6 +771,7 @@ def _run_project(path, action, preview, pick, resume, progress):
 
             state["selection"] = read_json(selection_path)
             apply_text_policy(path, options)
+            observe_scenes(path, state, stage)
         if action == "prepare":
             state.update(status="review", stage="ready for review")
         else:

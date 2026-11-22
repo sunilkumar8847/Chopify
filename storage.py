@@ -42,7 +42,7 @@ _SOURCE_PREFIXES = ("audio.", "source", "recording", "discovery", "download-")
 _SOURCE_DIRS = {"sections", "recording_parts", "parts", "audio_parts"}
 _AI_PREFIXES = ("transcript", "candidates", "captions.", "highlights", "segments",
                 "selection", "embeddings", "semantic", "hinglish", "visual",
-                "audio_features", "evidence")
+                "audio_features", "evidence", "scenes")
 _MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".wav", ".opus", ".ts",
                ".mov", ".aac", ".flac", ".part"}
 

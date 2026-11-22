@@ -13,6 +13,10 @@ import os
 
 DEFAULTS = {
     "scheduler": True,          # Phase 2: five-source persistent scheduler
+    "scene_detection": True,    # Phase 4: classify scenes (observation only)
+    # Phase 4: drop non-gameplay sections from clip selection. Off until a
+    # labelled evaluation of real recordings meets the targets (scene_eval.py).
+    "scene_filtering": False,
 }
 
 

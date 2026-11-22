@@ -4,4 +4,5 @@ faster-whisper
 opencv-python
 numpy
 python-dotenv   # reads .env (provider API keys); see docs/AI.md
+rapidocr-onnxruntime   # optional: scene OCR (Phase 4)
 # Captions are burnt in via ffmpeg's ASS engine (no extra package needed).

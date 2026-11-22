@@ -1751,3 +1751,10 @@ button.danger {
   display: inline-block;
   margin-right: 8px;
 }
+.scene-tag {
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.scene-tag:not([data-scene="gameplay"]) {
+  color: var(--danger);
+}

@@ -52,6 +52,17 @@ def project_detail(root, project_id):
                           ("selection.json", "selection")]:
         if (path / filename).exists():
             data[key] = projects.read_json(path / filename)
+    if (path / "scenes.json").exists():          # Phase 4 observation labels
+        try:
+            import scenes as scenes_mod
+            found = projects.read_json(path / "scenes.json")
+            data["scenes"] = {"summary": found.get("summary"), "scenes": found.get("scenes")}
+            for item in data["candidates"] or []:
+                if isinstance(item, dict) and "start" in item and "end" in item:
+                    item["scene"] = scenes_mod.label_at(
+                        found.get("scenes") or [], (float(item["start"]) + float(item["end"])) / 2)
+        except (ValueError, OSError, TypeError):
+            pass
     for directory in ("previews", "clips"):
         for file in sorted((path / directory).glob("*")):
             if file.suffix in {".mp4", ".srt", ".png", ".json"}:

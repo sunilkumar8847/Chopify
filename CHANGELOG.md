@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 4: gameplay-only scene classification (observation)
+- `scenes.py`: keyframe motion, static/loop detection, HUD stability, audio
+  RMS, RapidOCR keywords on a few frames, optional gateway vision (max 10
+  frames, privacy rules apply). Labels gameplay / starting_soon / intro /
+  menu / loading / brb / outro / static / unknown; `scenes.json` per project
+  and a scene tag on each candidate. Nothing is cut (`scene_filtering` off).
+- `scene_eval.py`: labelling page, time-weighted scoring against the targets,
+  synthetic stream generator.
+- Dependency: `rapidocr-onnxruntime` (optional; onnxruntime was present).
+
 ### Phase 3: project administration and dialogs
 - Human-readable project titles (`project_admin.display_title`), rename,
   three-dot project menu (rename, open folder, view storage, delete).

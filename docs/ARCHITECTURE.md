@@ -110,6 +110,17 @@ directory `<root>/<12-hex id>`; links inside are removed without entering
 them. API: `POST /api/projects/<id>/rename|open-folder|delete-plan|delete`.
 All confirmations use Studio's `#app-dialog`.
 
+## Upgrade Phase 4: scene classification (observation only)
+
+After clip selection, `projects.observe_scenes` runs `scenes.analyze` on the
+source video (cached by file identity) and stores `scenes.json`; Studio tags
+candidates with the scene at their midpoint. Signals: keyframes at 1 fps
+(64x36 gray), motion/loop/static/HUD, audio RMS, RapidOCR on up to 40 frames,
+gateway vision on up to 10 ambiguous frames when a privacy-eligible vision
+route exists. The `scene_filtering` flag (off) is reserved for removing
+non-gameplay sections once real labelled recordings meet >= 95 % gameplay
+kept and >= 90 % breaks identified (`python scene_eval.py score`).
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

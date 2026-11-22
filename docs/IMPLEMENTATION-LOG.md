@@ -15,3 +15,11 @@ passing.
 ## Phase 3
 `project_admin.py`, dialogs, menu. 15 unit tests (real junctions), 4 new
 browser tests, native dialogs removed (test asserts none). 967 passing.
+
+## Phase 4
+Synthetic stream (8 scenes): gameplay kept 100 %, breaks identified 99 %
+(OCR names every break screen; without OCR breaks are still never labelled
+gameplay). Real IRL recording (3490104f40dd, 178 s): analysed in 6.8 s, all
+labelled "gameplay" - motion cannot tell an IRL camera from a game, so
+filtering stays off; real labelled gaming recordings are needed to evaluate.
+8 tests.

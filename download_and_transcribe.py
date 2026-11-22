@@ -55,6 +55,8 @@ def download(url, workdir):
 
 
 def _download(url, workdir):
+    import compliance
+    compliance.require(url, "video download")
     out_tmpl = workdir / "source.%(ext)s"
     # Highest quality: best video + best audio, merged to mp4 (needs ffmpeg on PATH).
     cmd = [

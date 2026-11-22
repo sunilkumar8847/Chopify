@@ -99,6 +99,8 @@ def choose_track(tracks):
 
 def fetch(url, workdir, key, kind, runner=None):
     """Download one caption track as json3 (VTT/SRT accepted as fallback)."""
+    import compliance
+    compliance.require(url, "caption download")
     workdir = Path(workdir)
     for old in workdir.glob(f"{FILE_PREFIX}.*"):
         if old.suffix in {".json3", ".vtt", ".srt"}:

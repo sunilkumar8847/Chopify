@@ -438,3 +438,26 @@ def test_new_project_form_defaults_to_shorts(browser, studio):
     browser.wait("!document.querySelector('#project-view').hidden", timeout=15)
     saved = studio.app.list_projects()[0]["options"]
     assert (saved["aspect"], saved["min_len"], saved["max_len"]) == ("9:16", 15, 120)
+
+
+# ------------------------------------------------- Phase 0: compliance
+
+@pytest.mark.compliance_default
+def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
+    open_studio(browser, studio)
+    browser.wait("!document.querySelector('#compliance-note').hidden", timeout=10)
+    note = browser.evaluate("document.querySelector('#compliance-note').textContent")
+    assert "YouTube downloads are turned off" in note and "OBS" in note
+    assert "youtube" not in browser.evaluate("document.querySelector('#sources').placeholder").lower()
+    click_find_clips(browser, source="https://www.youtube.com/watch?v=aaaaaaaaaaa")
+    browser.wait("document.querySelector('#notice').classList.contains('error')", timeout=10)
+    assert "written approval" in notice(browser)
+    assert browser.api_requests("/api/batch")[0]["status"] == 400
+    assert studio.app.list_projects() == []
+    browser.evaluate("document.querySelector('#sources').value = 'https://youtu.be/aaaaaaaaaaa';"
+                     "document.querySelector('#detect').click()")
+    browser.wait("!document.querySelector('#detect-result').hidden", timeout=10)
+    assert browser.evaluate("document.querySelector('#detect-label').textContent") == \
+        "YouTube downloads are turned off"
+    assert browser.evaluate("document.querySelector('#detect-record').hidden")
+    assert not [c for c in browser.console if c["level"] == "error" and "400" not in c.get("text", "")]

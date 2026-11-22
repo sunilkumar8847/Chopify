@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import compliance
 import subtitles
 
 LONG_SECONDS = 2 * 60 * 60
@@ -331,6 +332,7 @@ def probe_source(source, runner=None):
     source = str(source)
     run = runner or _run
     if is_url(source):
+        compliance.require(source, "metadata probe")
         return _probe_url(source, run)
     path = Path(source).expanduser()
     if not path.is_file():
@@ -373,6 +375,7 @@ def _remove_old(workdir, prefix):
 
 
 def download_visual_discovery(url, workdir, runner=None):
+    compliance.require(url, "video download")
     """Download the lowest-resolution video for speechless visual discovery."""
     run = runner or _run
     workdir = Path(workdir)
@@ -396,6 +399,7 @@ def download_visual_discovery(url, workdir, runner=None):
 
 def download_discovery(url, workdir, meta=None, runner=None):
     """Download best audio, or a low-resolution video for silent URLs."""
+    compliance.require(url, "audio download")
     run = runner or _run
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -419,6 +423,7 @@ def download_discovery(url, workdir, meta=None, runner=None):
 
 def _download(url, out_path, fmt, runner=None, timeout=None, extra=()):
     """Run one yt-dlp download, converting a timeout into a clear error."""
+    compliance.require(url, "video download")
     run = runner or _run
     cmd = [sys.executable, "-m", "yt_dlp", "-f", fmt,
            "--merge-output-format", "mp4", "--no-playlist",

@@ -1626,3 +1626,8 @@ button.danger {
   font-size: 0.85rem;
   opacity: 0.85;
 }
+
+.compliance-note {
+  border-left: 3px solid var(--danger, #ffb9a8);
+  padding-left: 0.6rem;
+}

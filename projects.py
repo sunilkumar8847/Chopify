@@ -928,7 +928,12 @@ def run_batch(sources, root, options, runner=None, **kwargs):
     if not isinstance(sources, list) or not sources or any(not isinstance(s, str) for s in sources):
         raise ValueError("Batch input must be a non-empty JSON list of video paths or URLs.")
     results = []
+    import compliance
     for source in sources:
+        if compliance.blocked(source):
+            results.append({"id": None, "source": source, "status": "failed",
+                            "error": compliance.MESSAGE})
+            continue
         state = create_project(root, source, options)
         path = project_path(root, state["id"])
         try:

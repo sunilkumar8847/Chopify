@@ -17,6 +17,7 @@ import webbrowser
 
 import applog
 import automation
+import compliance
 import download_and_transcribe as dt
 import transcription
 import branding
@@ -120,6 +121,13 @@ def detect_source(source):
     source = source.strip()
     if not ingest.is_url(source) and not Path(source).expanduser().is_file():
         raise ValueError(f"Video file does not exist or URL is invalid: {source}")
+    if compliance.blocked(source):
+        applog.info("compliance.blocked", "Check source: YouTube URL not read",
+                    access="metadata probe")
+        return {"label": "YouTube downloads are turned off", "kind": "blocked",
+                "message": compliance.MESSAGE, "source": source, "title": None,
+                "can_record": False, "blocked": True, "probe_error": None,
+                "duration": None, "live_status": None, "release_timestamp": None}
     with applog.step("source.validate", f"Check source {source}"):
         meta = ingest.probe_source(source)
         info = ingest.describe_source(meta)
@@ -139,7 +147,7 @@ def source_problem(source):
         return "Empty source line."
     source = source.strip()
     if ingest.is_url(source):
-        return None
+        return compliance.MESSAGE if compliance.blocked(source) else None
     if re.match(r"^[a-z][a-z0-9+.-]*://", source, re.I) or source.lower().startswith("www."):
         return f"Not a usable URL (use a full http(s) link): {source}"
     if not Path(source).expanduser().is_file():
@@ -405,6 +413,8 @@ class Studio:
             self.monitor_next = None
             if self.closing or not settings["monitor_enabled"] or not self.settings.channels():
                 return
+            if not compliance.youtube_downloads_allowed():
+                return              # yt-dlp channel monitoring is off (compliance)
             delay = settings["monitor_interval_minutes"] * 60
             self.monitor_next = time.time() + delay
             self.monitor_timer = threading.Timer(delay, self._monitor_tick)
@@ -776,6 +786,7 @@ class Studio:
                 raise ValueError("This stream is already recorded. Create a new "
                                  "project to record it again.")
             url = (rec or {}).get("url") or state.get("source_url") or state["source"]
+            compliance.require(url, "live recording")
             if not ingest.is_url(url):
                 raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
             if not isinstance(rec, dict):
@@ -1065,6 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
                     "new_defaults": projects.NEW_PROJECT_DEFAULTS,
                     "profiles": transcription.PROFILES,
                     "gpu": self.app.gpu_status(),
+                    "compliance": compliance.status(),
                     "brands": brands,
                     "caption_brands": caption_brands,
                     "caption_presets": render_clips.CAPTION_STYLES,
@@ -1194,6 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
                     source = body.get("source")
                     if not isinstance(source, str) or not ingest.is_url(source.strip()):
                         raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
+                    compliance.require(source.strip(), "live recording")
                     state = live.start_recording_project(
                         self.app.root, source.strip(), body.get("settings"),
                         body.get("options", {}))

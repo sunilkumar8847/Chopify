@@ -276,6 +276,8 @@ def normalize_channel(url):
 
 def ytdlp_lister(channel_url, tab, limit=MONITOR_LATEST, timeout=120):
     """Newest entries of a channel tab via yt-dlp (no downloads)."""
+    import compliance
+    compliance.require(channel_url, "channel monitoring")
     cmd = [sys.executable, "-m", "yt_dlp", "--flat-playlist", "-J", "--no-warnings",
            "--playlist-end", str(limit), f"{channel_url}/{tab}"]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
@@ -311,6 +313,8 @@ class Monitor:
 
     def add(self, url, label=""):
         url = normalize_channel(url)
+        import compliance
+        compliance.require(url, "channel monitoring")
         channels = self.settings.channels()
         if any(c["url"] == url for c in channels):
             raise ValueError("This channel is already monitored.")
@@ -335,6 +339,10 @@ class Monitor:
         The first check of a channel only records what already exists, so
         adding a channel never processes its back catalogue.
         """
+        import compliance
+        if self.lister is ytdlp_lister and not compliance.youtube_downloads_allowed():
+            # Channels and their history are kept untouched; nothing is read.
+            return [{"channel": None, "error": compliance.MESSAGE, "blocked": True}]
         with self.lock:
             channels = self.settings.channels()
             results = []

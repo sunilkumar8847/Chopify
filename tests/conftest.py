@@ -28,3 +28,19 @@ def _isolated_logs(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("CHOPIFY_LOG_DIR", str(tmp_path_factory.mktemp("logs")))
     for name in ("CHOPIFY_PROJECT_ID", "CHOPIFY_JOB_ID", "CHOPIFY_REQUEST_ID"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_youtube_paths(monkeypatch, request):
+    # Existing tests exercise the (fake) YouTube download paths, which stay in
+    # the code for when YouTube grants written approval. They run with the
+    # switch on; tests marked ``compliance_default`` see the real default (off).
+    if request.node.get_closest_marker("compliance_default"):
+        monkeypatch.delenv("CHOPIFY_YOUTUBE_DOWNLOADS", raising=False)
+    else:
+        monkeypatch.setenv("CHOPIFY_YOUTUBE_DOWNLOADS", "1")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "compliance_default: run with YouTube downloads at their real default (off)")

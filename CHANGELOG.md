@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Compliance (Phase 0)
+- YouTube downloads are turned off by default (YouTube API Developer
+  Policies III.E.1: no copies of YouTube audiovisual content without written
+  approval). Blocked for new work: URL audio/video, section and full
+  downloads, yt-dlp metadata probes, caption fetching, live recording and
+  channel monitoring. Studio, the CLI and batch mode explain why and create
+  nothing. Local files, other sites, existing projects and the official Data
+  API are unchanged. Reversible: `features.json` `{"youtube_downloads": true}`
+  or `CHOPIFY_YOUTUBE_DOWNLOADS=1` (docs/COMPLIANCE.md).
+
 ### Shorts output and Studio corrections
 - New projects default to Shorts: 9:16 (1080x1920), clips 15-120 s. For 9:16
   the 120 s limit is hard: settings above it are saved as 120, duration

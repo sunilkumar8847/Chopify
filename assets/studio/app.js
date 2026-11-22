@@ -159,9 +159,21 @@ function showProcessingMode() {
 for (const id of ["#new-profile", "#new-device", "#new-subtitles", "#new-model"])
   $(id)?.addEventListener("change", showProcessingMode);
 
+function showCompliance() {
+  const note = $("#compliance-note");
+  const info = state.config?.compliance;
+  if (!note || !info) return;
+  note.hidden = !info.message;
+  note.textContent = info.message || "";
+  if (info.message)
+    $("#sources").placeholder =
+      "C:\\Videos\\recording.mp4\nD:\\OBS\\2026-11-22 20-15-01.mkv";
+}
+
 async function config() {
   state.config = await api("/api/config");
   state.token = state.config.token;
+  showCompliance();
   showProcessingMode();
   updatePresets();
   updateBrands();

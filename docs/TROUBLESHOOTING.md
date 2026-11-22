@@ -35,6 +35,14 @@ An error shown in Studio that ends with "(request abc123...)" can be looked
 up with `--request`. Each project's `job.log` still holds the full output of
 its jobs.
 
+## "YouTube downloads are turned off"
+
+Chopify does not download, record or read YouTube videos, captions or
+channels without YouTube's written approval. Use a local recording or an OBS
+output folder. Existing projects keep working. See
+[COMPLIANCE.md](COMPLIANCE.md) for what is affected and how to turn it back
+on once approval exists.
+
 ## Find clips does nothing
 
 Fixed: a hidden live-recording field had an invalid default and silently

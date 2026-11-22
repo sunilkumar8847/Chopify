@@ -312,9 +312,10 @@ class Monitor:
         self.lock = threading.Lock()
 
     def add(self, url, label=""):
-        url = normalize_channel(url)
         import compliance
-        compliance.require(url, "channel monitoring")
+        if not compliance.youtube_downloads_allowed():
+            return self._add_own(url, label)
+        url = normalize_channel(url)
         channels = self.settings.channels()
         if any(c["url"] == url for c in channels):
             raise ValueError("This channel is already monitored.")
@@ -323,6 +324,105 @@ class Monitor:
                  "last_check": None, "last_error": None, "found": 0}
         self.settings.save_channels(channels + [entry])
         return entry
+
+    # ------------------------------------------- official API (Phase 0.1)
+    official = None          # youtube_data.DataClient, set by Studio
+
+    @staticmethod
+    def is_own(channel, own):
+        """True when a stored channel entry is the connected channel itself."""
+        if not own:
+            return False
+        url = str(channel.get("url") or "").lower().rstrip("/")
+        handle = str(own.get("handle") or "").lower()
+        return (channel.get("id") == own["id"] or url.endswith("/channel/" + own["id"].lower())
+                or bool(handle) and url.endswith("/" + handle.lstrip("/")))
+
+    def _add_own(self, url, label=""):
+        import compliance
+        if self.official is None:
+            raise ValueError("Connect your YouTube channel first.")
+        import youtube_data
+        try:
+            own = self.official.own_channel()
+        except youtube_data.DataApiError as exc:
+            raise ValueError(str(exc)) from exc
+        wanted = str(url or "").strip()
+        probe = {"id": None, "url": normalize_channel(wanted)} if wanted.lower() != "mine" \
+            else {"id": own["id"], "url": ""}
+        if not self.is_own(probe, own):
+            raise ValueError(compliance.EXTERNAL_CHANNEL)
+        channels = self.settings.channels()
+        if any(self.is_own(c, own) and not c.get("inactive") for c in channels):
+            raise ValueError("Your channel is already monitored.")
+        for c in channels:                     # an earlier entry for it: reactivate
+            if self.is_own(c, own):
+                c.update(inactive=False, inactive_reason=None, own=True)
+                self.settings.save_channels(channels)
+                return c
+        entry = {"id": own["id"], "url": f"https://www.youtube.com/channel/{own['id']}",
+                 "label": str(label or own["title"])[:80], "added": self.clock(),
+                 "baseline": False, "seen": [], "last_check": None, "last_error": None,
+                 "found": 0, "own": True, "source": "youtube_data_api"}
+        self.settings.save_channels(channels + [entry])
+        return entry
+
+    def _check_official(self, handle):
+        """Own channel through the official API; other channels are paused."""
+        import compliance
+        import youtube_data
+        with self.lock:
+            channels = self.settings.channels()
+            results = []
+            own = uploads = None
+            error = None
+            if self.official is None:
+                error = "Connect your YouTube channel to monitor it."
+            else:
+                try:
+                    own, uploads = self.official.own_uploads()
+                except youtube_data.DataApiError as exc:
+                    error = str(exc)
+            for channel in channels:
+                if own is not None and not self.is_own(channel, own):
+                    if not channel.get("inactive"):
+                        channel.update(inactive=True, inactive_reason=compliance.EXTERNAL_CHANNEL)
+                    results.append({"channel": channel["id"], "inactive": True})
+                    continue
+                if own is None:
+                    if channel.get("own"):
+                        channel["last_error"] = error
+                        channel["last_check"] = self.clock()
+                    results.append({"channel": channel["id"], "error": error})
+                    continue
+                if channel.get("inactive"):
+                    results.append({"channel": channel["id"], "inactive": True})
+                    continue
+                seen = set(channel.get("seen") or [])
+                found = [{"id": v["id"], "title": v["title"], "url": v["url"],
+                          "live_status": v["live_status"]} for v in uploads
+                         if v["id"] not in seen]
+                taken = []
+                if not channel.get("baseline"):
+                    taken = [e["id"] for e in found]
+                    channel["baseline"] = True
+                else:
+                    for entry in found:
+                        status = entry["live_status"]
+                        kind = ("live" if status == "is_live" else
+                                "upcoming" if status == "is_upcoming" else "video")
+                        if handle(kind, entry, channel):
+                            taken.append(entry["id"])
+                            channel["found"] = channel.get("found", 0) + 1
+                channel.update(seen=(list(seen) + taken)[-500:], last_check=self.clock(),
+                               last_error=None, own=True, source="youtube_data_api")
+                results.append({"channel": channel["id"], "new": len(taken)})
+            current = {c["id"]: c for c in self.settings.channels()}
+            for channel in channels:
+                if channel["id"] in current:
+                    current[channel["id"]] = channel
+            self.settings.save_channels(list(current.values()))
+            return results or ([{"channel": None, "error": error}] if error else [])
 
     def remove(self, channel):
         channels = self.settings.channels()
@@ -341,8 +441,7 @@ class Monitor:
         """
         import compliance
         if self.lister is ytdlp_lister and not compliance.youtube_downloads_allowed():
-            # Channels and their history are kept untouched; nothing is read.
-            return [{"channel": None, "error": compliance.MESSAGE, "blocked": True}]
+            return self._check_official(handle)
         with self.lock:
             channels = self.settings.channels()
             results = []

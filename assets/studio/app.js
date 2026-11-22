@@ -1831,7 +1831,7 @@ function renderOverview(data) {
     ? data.channels
         .map(
           (c) =>
-            `<li><span>${escapeHTML(c.label || c.url)}</span><small class="muted">${escapeHTML(c.last_check ? `checked ${relTime(c.last_check)} · ${c.found || 0} found` : "not checked yet")}</small>${c.last_error ? `<small class="dash-error">${escapeHTML(c.last_error)}</small>` : ""}<button type="button" class="link" data-remove-channel="${escapeHTML(c.id)}">Remove</button></li>`,
+            `<li><span>${escapeHTML(c.label || c.url)}</span><small class="muted">${escapeHTML(c.last_check ? `checked ${relTime(c.last_check)} · ${c.found || 0} found` : "not checked yet")}</small>${c.inactive ? `<small class="dash-error">Inactive: ${escapeHTML(c.inactive_reason || "")}</small>` : c.own ? `<small class="muted">Your channel · official YouTube Data API · <a href="${escapeHTML(c.url)}" target="_blank" rel="noopener">open on YouTube</a></small>` : ""}${c.last_error ? `<small class="dash-error">${escapeHTML(c.last_error)}</small>` : ""}<button type="button" class="link" data-remove-channel="${escapeHTML(c.id)}">Remove</button></li>`,
         )
         .join("")
     : `<li class="muted">No channels monitored.</li>`;

@@ -128,12 +128,17 @@
               <label class="sr-only" for="dash-channel-url">Channel URL</label>
               <input
                 id="dash-channel-url"
-                placeholder="https://www.youtube.com/@channel"
+                placeholder="Your channel URL, or type: mine"
                 required
               /><label class="sr-only" for="dash-channel-label">Label</label
               ><input id="dash-channel-label" placeholder="Label (optional)" />
               <button type="submit">Add channel</button>
             </form>
+            <p class="hint">
+              Monitoring uses the official YouTube Data API for your own
+              connected channel only. New uploads are listed with a link;
+              nothing is downloaded.
+            </p>
             <button id="dash-check-now" type="button">Check channels now</button>
           </section>
           <section class="panel dash-panel">

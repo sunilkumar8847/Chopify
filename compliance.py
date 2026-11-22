@@ -88,7 +88,30 @@ def require(url, operation):
         raise YouTubeBlocked(operation)
 
 
+# Each YouTube capability on its own (Phase 0.1). Only the audiovisual paths
+# depend on the download switch; the rest use official APIs or wait.
+CAPABILITIES = {
+    "metadata_lookup": ("official_api", "Check source uses YouTube Data API videos.list."),
+    "own_channel_monitoring": ("official_api", "Your connected channel only: "
+                               "channels.list + playlistItems.list + videos.list."),
+    "discovery": ("planned", "Official search.list / videos.list in the discovery phase."),
+    "caption_download": ("deferred", "captions.download needs permission to edit the "
+                         "video; not used. Speech-to-text is used instead."),
+    "audiovisual_download": ("approval_required", "Off until YouTube grants written approval."),
+    "url_live_recording": ("approval_required", "Off until YouTube grants written approval."),
+}
+EXTERNAL_CHANNEL = ("Only your own connected channel can be monitored through the official "
+                    "YouTube API: YouTube Developer Policies III.E.2 do not allow combining "
+                    "API data across different content owners. This channel is kept, "
+                    "not deleted, and can be monitored again if that changes.")
+
+
 def status():
     """What the Studio UI shows."""
     allowed = youtube_downloads_allowed()
-    return {"youtube_downloads": allowed, "message": None if allowed else MESSAGE}
+    caps = {name: {"state": state, "note": note} for name, (state, note) in CAPABILITIES.items()}
+    if allowed:
+        for name in ("audiovisual_download", "url_live_recording"):
+            caps[name]["state"] = "enabled"
+    return {"youtube_downloads": allowed, "message": None if allowed else MESSAGE,
+            "capabilities": caps}

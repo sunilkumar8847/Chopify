@@ -124,14 +124,14 @@ def test_channel_monitoring_reads_nothing_and_keeps_channels(tmp_path, no_proces
     settings = automation.Settings(tmp_path)
     with pytest.raises(compliance.YouTubeBlocked):
         automation.ytdlp_lister("https://www.youtube.com/@SomeChannel", "videos")
-    monitor = automation.Monitor(settings)
-    with pytest.raises(compliance.YouTubeBlocked):
+    monitor = automation.Monitor(settings)            # no official client connected
+    with pytest.raises(ValueError, match="Connect your YouTube channel"):
         monitor.add("https://www.youtube.com/@SomeChannel")
     existing = [{"id": "c1", "url": "https://www.youtube.com/@Old", "label": "", "added": 1,
                  "baseline": True, "seen": ["a"], "last_check": 5, "last_error": None, "found": 2}]
     settings.save_channels(existing)
     results = monitor.check(lambda *a: True)
-    assert results[0]["blocked"] and "turned off" in results[0]["error"]
+    assert "Connect your YouTube channel" in results[0]["error"]
     assert settings.channels() == existing, "monitored channels are kept as they were"
     assert no_processes == []
 
@@ -186,8 +186,8 @@ def test_studio_explains_and_creates_nothing(server, tmp_path, no_processes):
     assert status == 400 and "YouTube downloads are turned off" in body["error"]
     assert httpd.app.list_projects() == []
     status, body = post(base, "/api/detect", {"source": URL}, token)
-    assert status == 200 and body["blocked"] and "written approval" in body["message"]
-    assert body["can_record"] is False
+    # Phase 0.1: official API only; with no connection and no key it explains.
+    assert status == 400 and "official API" in body["error"]
     status, body = post(base, "/api/record", {"source": URL}, token)
     assert status == 400 and "turned off" in body["error"]
     assert httpd.app.list_projects() == []
@@ -197,7 +197,8 @@ def test_studio_explains_and_creates_nothing(server, tmp_path, no_processes):
     assert status == 201 and len(body["projects"]) == 1, "local files still work"
     assert "turned off" in body["errors"][0]["error"]
     config = json.load(urllib.request.urlopen(base + "/api/config"))
-    assert config["compliance"] == {"youtube_downloads": False, "message": compliance.MESSAGE}
+    assert config["compliance"]["youtube_downloads"] is False
+    assert config["compliance"]["message"] == compliance.MESSAGE
     assert no_processes == []
 
 
@@ -320,7 +321,13 @@ def test_default_is_off_with_neither_file_nor_variable(monkeypatch):
     monkeypatch.delenv(compliance.ENV, raising=False)
     assert not compliance._config_file().exists()
     assert compliance.youtube_downloads_allowed() is False
-    assert compliance.status() == {"youtube_downloads": False, "message": compliance.MESSAGE}
+    status = compliance.status()
+    assert status["youtube_downloads"] is False and status["message"] == compliance.MESSAGE
+    caps = {k: v["state"] for k, v in status["capabilities"].items()}
+    assert caps == {"metadata_lookup": "official_api", "own_channel_monitoring": "official_api",
+                    "discovery": "planned", "caption_download": "deferred",
+                    "audiovisual_download": "approval_required",
+                    "url_live_recording": "approval_required"}
 
 
 @pytest.mark.parametrize("content", [

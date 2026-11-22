@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Compliance (Phase 0.1)
+- Feature-level YouTube capabilities instead of one blanket block. Check
+  source works again through the official Data API (`videos.list`: title,
+  channel, duration, live state, views; clear "not found" and quota
+  messages; never a yt-dlp fallback). Own-channel monitoring uses
+  `channels.list` + `playlistItems.list` + `videos.list` and reports new
+  uploads with a link (metadata only). Other channels are kept but marked
+  inactive (Developer Policies III.E.2). Audiovisual downloads, URL live
+  recording and unofficial captions stay off; `captions.download` deferred.
+  API keys (`CHOPIFY_YOUTUBE_API_KEY`, optional) are redacted from logs.
+
 ### Compliance (Phase 0)
 - YouTube downloads are turned off by default (YouTube API Developer
   Policies III.E.1: no copies of YouTube audiovisual content without written

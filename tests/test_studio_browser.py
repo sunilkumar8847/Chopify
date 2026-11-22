@@ -456,8 +456,9 @@ def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
     assert studio.app.list_projects() == []
     browser.evaluate("document.querySelector('#sources').value = 'https://youtu.be/aaaaaaaaaaa';"
                      "document.querySelector('#detect').click()")
-    browser.wait("!document.querySelector('#detect-result').hidden", timeout=10)
-    assert browser.evaluate("document.querySelector('#detect-label').textContent") == \
-        "YouTube downloads are turned off"
+    # Phase 0.1: Check source asks the official API; without a connected
+    # channel or server key it says so (and never falls back to yt-dlp).
+    browser.wait("document.querySelector('#notice').textContent.includes('official API')",
+                 timeout=10)
     assert browser.evaluate("document.querySelector('#detect-record').hidden")
     assert not [c for c in browser.console if c["level"] == "error" and "400" not in c.get("text", "")]

@@ -18,6 +18,7 @@ import webbrowser
 import applog
 import automation
 import compliance
+import youtube_data
 import download_and_transcribe as dt
 import transcription
 import branding
@@ -114,7 +115,52 @@ def clip_info(path, clip):
             "start": start, "end": end}
 
 
-def detect_source(source):
+def youtube_metadata(source, client):
+    """Check source for a YouTube URL: official videos.list only.
+
+    Never downloads anything and never falls back to yt-dlp or scraping.
+    """
+    video_id = automation.youtube_id(source)
+    base = {"source": source, "kind": "youtube", "blocked": not compliance.youtube_downloads_allowed(),
+            "can_record": False, "probe_error": None, "metadata_source": "youtube_data_api",
+            "title": None, "duration": None, "live_status": None, "release_timestamp": None}
+    if not video_id:
+        return {**base, "label": "Not a YouTube video link",
+                "message": "Check source looks up single videos (watch, youtu.be, shorts or "
+                           "live links). Channel and playlist links are not checked."}
+    if client is None:
+        raise ValueError("The official YouTube API is not available in this mode.")
+    with applog.step("source.validate", f"Check source {video_id} (YouTube Data API)"):
+        try:
+            info = client.video(video_id)
+        except youtube_data.DataApiError as exc:
+            raise ValueError(f"Check source could not ask YouTube: {exc}") from exc
+    if info is None:
+        return {**base, "label": "Video not found",
+                "message": f"YouTube has no public video with the ID {video_id}. It may be "
+                           "private, removed or mistyped."}
+    bits = [info["channel_title"]]
+    if info["duration"]:
+        total = int(info["duration"])
+        bits.append(f"{total // 3600}:{total % 3600 // 60:02}:{total % 60:02}" if total >= 3600
+                    else f"{total // 60}:{total % 60:02}")
+    if info["published_at"]:
+        bits.append(f"published {info['published_at'][:10]}")
+    if info["view_count"] is not None:
+        bits.append(f"{info['view_count']:,} views")
+    label = {"is_live": "Live now on YouTube", "is_upcoming": "Upcoming YouTube stream",
+             "was_live": "Finished YouTube live stream"}.get(info["live_status"], "YouTube video")
+    note = (" Chopify does not download YouTube videos without YouTube's written approval. "
+            "To clip your own video, download it from YouTube Studio and add the file, or "
+            "use your OBS recording.") if base["blocked"] else ""
+    return {**base, "label": label, "title": info["title"],
+            "channel": info["channel_title"], "channel_id": info["channel_id"],
+            "duration": info["duration"], "live_status": info["live_status"],
+            "privacy_status": info["privacy_status"], "url": info["url"],
+            "message": " · ".join(b for b in bits if b) + "." + note}
+
+
+def detect_source(source, youtube=None):
     """Classify a local path or URL (normal video, live, upcoming, ...)."""
     if not isinstance(source, str) or not source.strip() or len(source) > 8000:
         raise ValueError("Provide a video path or URL.")
@@ -122,12 +168,8 @@ def detect_source(source):
     if not ingest.is_url(source) and not Path(source).expanduser().is_file():
         raise ValueError(f"Video file does not exist or URL is invalid: {source}")
     if compliance.blocked(source):
-        applog.info("compliance.blocked", "Check source: YouTube URL not read",
-                    access="metadata probe")
-        return {"label": "YouTube downloads are turned off", "kind": "blocked",
-                "message": compliance.MESSAGE, "source": source, "title": None,
-                "can_record": False, "blocked": True, "probe_error": None,
-                "duration": None, "live_status": None, "release_timestamp": None}
+        # Downloads are off (the default): official API metadata only.
+        return youtube_metadata(source, youtube)
     with applog.step("source.validate", f"Check source {source}"):
         meta = ingest.probe_source(source)
         info = ingest.describe_source(meta)
@@ -203,6 +245,7 @@ class Studio:
         self.settings = automation.Settings(self.root)
         self.events = automation.EventLog(self.root)
         self.monitor = automation.Monitor(self.settings)
+        self.monitor.official = self.youtube_data()
         self.monitor_timer = None
         self.monitor_busy = threading.Lock()
         self.recover = []          # processing jobs interrupted by a restart
@@ -336,6 +379,10 @@ class Studio:
                      reason="retry")
         return {"ok": True}
 
+    def youtube_data(self):
+        """Read-only official Data API client (quota counted in the ledger)."""
+        return youtube_data.DataClient(self.youtube, record_usage=self.uploads.record_api_call)
+
     def gpu_status(self):
         """Whether Whisper can use the GPU here (checked once per Studio run)."""
         if self._gpu is None:
@@ -413,8 +460,9 @@ class Studio:
             self.monitor_next = None
             if self.closing or not settings["monitor_enabled"] or not self.settings.channels():
                 return
-            if not compliance.youtube_downloads_allowed():
-                return              # yt-dlp channel monitoring is off (compliance)
+            if not compliance.youtube_downloads_allowed() and not any(
+                    c.get("own") and not c.get("inactive") for c in self.settings.channels()):
+                return              # only your own channel is monitored (official API)
             delay = settings["monitor_interval_minutes"] * 60
             self.monitor_next = time.time() + delay
             self.monitor_timer = threading.Timer(delay, self._monitor_tick)
@@ -438,6 +486,15 @@ class Studio:
 
             def handle(kind, entry, channel):
                 if self.find_duplicate(entry["url"]) is not None:
+                    return True
+                if not compliance.youtube_downloads_allowed():
+                    # Metadata only: report it with a link; never download.
+                    if kind == "upcoming":
+                        return False             # report it when it goes live
+                    what = "is live" if kind == "live" else "has a new upload"
+                    self.events.add("monitor", f"Your channel {what}: {entry['url']} "
+                                    "(metadata only; YouTube downloads are off, so add a "
+                                    "local copy or your OBS recording to clip it).")
                     return True
                 if kind == "upcoming":
                     return False                 # look again when it is live
@@ -1164,7 +1221,8 @@ class Handler(BaseHTTPRequestHandler):
             parts = unquote(urlsplit(self.path).path).strip("/").split("/")
             if parts == ["api", "detect"]:
                 # Network probe: deliberately outside the global lock.
-                return self.send_json(detect_source(body.get("source")))
+                return self.send_json(detect_source(body.get("source"),
+                                                    self.app.youtube_data()))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
             if parts == ["api", "storage", "cleanup"]:

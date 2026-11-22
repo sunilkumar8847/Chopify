@@ -151,9 +151,11 @@ def youtube_metadata(source, client):
         bits.append(f"{info['view_count']:,} views")
     label = {"is_live": "Live now on YouTube", "is_upcoming": "Upcoming YouTube stream",
              "was_live": "Finished YouTube live stream"}.get(info["live_status"], "YouTube video")
-    note = (" Chopify does not download YouTube videos without YouTube's written approval. "
-            "To clip your own video, download it from YouTube Studio and add the file, or "
-            "use your OBS recording.") if base["blocked"] else ""
+    note = (" This is public metadata from the official Data API only. Downloading or "
+            "recording YouTube audiovisual content is disabled pending written approval, "
+            "so Find clips cannot use this link. To clip your own video, download it from "
+            "YouTube Studio and add the file, or use your OBS recording.") \
+        if base["blocked"] else ""
     return {**base, "label": label, "title": info["title"],
             "channel": info["channel_title"], "channel_id": info["channel_id"],
             "duration": info["duration"], "live_status": info["live_status"],

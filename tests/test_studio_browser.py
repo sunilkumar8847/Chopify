@@ -447,7 +447,15 @@ def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
     open_studio(browser, studio)
     browser.wait("!document.querySelector('#compliance-note').hidden", timeout=10)
     note = browser.evaluate("document.querySelector('#compliance-note').textContent")
-    assert "YouTube downloads are turned off" in note and "OBS" in note
+    assert "public metadata using the official Data API" in note
+    assert "disabled pending written approval" in note
+    assert "Find clips cannot process a YouTube URL directly" in note
+    assert "authorized local recording" in note and "OBS" in note
+    assert "does not download, record or read" not in note
+    hint = browser.evaluate("document.querySelector('#sources-hint').textContent")
+    assert "YouTube links are metadata-only" in hint and "Authorized direct media URLs" in hint
+    assert "URLs download to their project folder" not in hint.replace(
+        "direct media URLs download to their project folder", "")
     assert "youtube" not in browser.evaluate("document.querySelector('#sources').placeholder").lower()
     click_find_clips(browser, source="https://www.youtube.com/watch?v=aaaaaaaaaaa")
     browser.wait("document.querySelector('#notice').classList.contains('error')", timeout=10)

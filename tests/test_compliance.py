@@ -183,19 +183,19 @@ def test_studio_explains_and_creates_nothing(server, tmp_path, no_processes):
     httpd, base = server
     token = httpd.app.token
     status, body = post(base, "/api/batch", {"sources": [URL]}, token)
-    assert status == 400 and "YouTube downloads are turned off" in body["error"]
+    assert status == 400 and "disabled pending written approval" in body["error"]
     assert httpd.app.list_projects() == []
     status, body = post(base, "/api/detect", {"source": URL}, token)
     # Phase 0.1: official API only; with no connection and no key it explains.
     assert status == 400 and "official API" in body["error"]
     status, body = post(base, "/api/record", {"source": URL}, token)
-    assert status == 400 and "turned off" in body["error"]
+    assert status == 400 and "disabled pending written approval" in body["error"]
     assert httpd.app.list_projects() == []
     local = tmp_path / "mine.mp4"
     local.write_bytes(b"x")
     status, body = post(base, "/api/batch", {"sources": [str(local), URL]}, token)
     assert status == 201 and len(body["projects"]) == 1, "local files still work"
-    assert "turned off" in body["errors"][0]["error"]
+    assert "disabled pending written approval" in body["errors"][0]["error"]
     config = json.load(urllib.request.urlopen(base + "/api/config"))
     assert config["compliance"]["youtube_downloads"] is False
     assert config["compliance"]["message"] == compliance.MESSAGE
@@ -232,7 +232,7 @@ def test_cli_refuses_new_youtube_projects(tmp_path, monkeypatch, capsys):
                                      "--no-preflight", "--no-input"])
     with pytest.raises(SystemExit) as exc:
         chopify.main()
-    assert exc.value.code == 1 and "turned off" in capsys.readouterr().err
+    assert exc.value.code == 1 and "disabled pending written approval" in capsys.readouterr().err
     assert not (tmp_path / "w" / "project.json").exists()
     results = projects.run_batch([URL], tmp_path / "batch", {})
     assert results[0]["status"] == "failed" and results[0]["id"] is None

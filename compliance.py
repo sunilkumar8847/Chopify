@@ -34,11 +34,12 @@ import applog
 FEATURES_FILE = "features.json"
 ENV = "CHOPIFY_YOUTUBE_DOWNLOADS"
 YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com")
-MESSAGE = ("YouTube downloads are turned off. Chopify does not download, record or "
-           "read YouTube videos, captions or channels without YouTube's written "
-           "approval (YouTube API Developer Policies, section III.E.1). Use a local "
-           "recording, an OBS output folder or another authorized direct source. "
-           "Existing projects stay available.")
+MESSAGE = ("YouTube links can be checked for public metadata using the official Data "
+           "API (Check source). Downloading or recording YouTube audiovisual content is "
+           "disabled pending written approval (YouTube API Developer Policies, section "
+           "III.E.1), so Find clips cannot process a YouTube URL directly. To create "
+           "clips, import an authorized local recording (OBS recordings included) or use "
+           "a supported direct media source. Existing projects stay available.")
 
 
 class YouTubeBlocked(ValueError):

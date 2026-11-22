@@ -121,6 +121,18 @@ route exists. The `scene_filtering` flag (off) is reserved for removing
 non-gameplay sections once real labelled recordings meet >= 95 % gameplay
 kept and >= 90 % breaks identified (`python scene_eval.py score`).
 
+## Upgrade Phase 5: live ingestion
+
+`live_ingest.LiveManager` (Studio `self.live`) runs one `Session` thread per
+live source. Each session is a project (`status: recording`, `live` block in
+project.json) and an open scheduler source. ffmpeg's segment muxer writes
+`live/segments/seg%08d.ts` and a CSV list; the session indexes completed
+segments on a session timeline into `live/index.db`, trims the ring to
+`buffer_seconds` except pinned ranges, and runs the disk watchdog every
+second. `Ring.extract(start, end)` joins the covering segments for clipping.
+A new segment calls Studio's `_live_segment` hook (Phase 6). SRT and
+`-follow` are available in the bundled FFmpeg 9.0.2 build.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

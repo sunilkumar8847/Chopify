@@ -1758,3 +1758,21 @@ button.danger {
 .scene-tag:not([data-scene="gameplay"]) {
   color: var(--danger);
 }
+
+.live-session {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.live-session strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-session small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}

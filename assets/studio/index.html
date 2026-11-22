@@ -192,6 +192,27 @@
             </form>
           </section>
         </div>
+        <section id="live-panel" class="panel dash-panel">
+          <div class="panel-title">
+            <h2>Live sessions</h2>
+            <span id="live-summary">OBS FOLDER · SRT · DIRECT FEEDS</span>
+          </div>
+          <form id="live-form" class="dash-settings live-form">
+            <label>Source type<select name="kind">
+                <option value="obs_folder">OBS output folder (record as MKV)</option>
+                <option value="srt">SRT (srt://host:port?mode=listener)</option>
+                <option value="url">Direct media URL (HLS/RTMP you may use)</option>
+              </select></label>
+            <label>Folder or address<input name="source" required
+                placeholder="D:\OBS\Recordings  or  srt://0.0.0.0:9000?mode=listener" /></label>
+            <label>Name<input name="title" maxlength="80" placeholder="GTA night stream" /></label>
+            <button type="submit">Start live session</button>
+          </form>
+          <p class="hint">Up to 5 sources at once (live sessions and videos together). YouTube
+            addresses cannot be recorded. Chopify keeps a rolling buffer of the last 30 minutes;
+            moments marked for clips are kept until their clip is made.</p>
+          <div id="live-sessions" class="live-sessions" aria-live="polite"></div>
+        </section>
         <section id="ai-panel" class="panel dash-panel">
           <div class="panel-title">
             <h2>AI</h2>

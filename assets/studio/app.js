@@ -1941,6 +1941,7 @@ function updateDashBadge(data) {
 }
 async function loadOverview() {
   renderOverview(await api("/api/overview"));
+  await loadLive().catch((error) => notice(`Live sessions unavailable: ${error.message}`, true));
   await loadAI().catch((error) => aiShow(`AI settings unavailable: ${error.message}`, true));
   await loadStorage().catch((error) =>
     showStorageResult(`Storage information unavailable: ${error.message}`, true),
@@ -2586,3 +2587,57 @@ function renderSourceSlots(info) {
   out.hidden = false;
   out.textContent = `Sources ${info.active}/${s.max_sources} active${info.waiting ? ` · ${info.waiting} waiting` : ""} · render ${info.stages.render.running}/${info.stages.render.slots}${info.paused_reason ? ` · paused: ${info.paused_reason}` : ""}`;
 }
+
+// --------------------------------------------------------- live sessions (Phase 5)
+const LIVE_KINDS = { obs_folder: "OBS folder", srt: "SRT", url: "Direct URL" };
+function renderLive(data) {
+  const active = data.sessions.filter((s) => s.state === "active").length;
+  $("#live-summary").textContent = `${active} ACTIVE`;
+  $("#live-sessions").innerHTML = data.sessions.length
+    ? data.sessions
+        .map(
+          (s) => `<article class="live-session" data-live="${s.project_id}" data-state="${escapeHTML(s.state)}">
+        <strong>${escapeHTML(LIVE_KINDS[s.kind] || s.kind)} · ${escapeHTML(s.source)}</strong>
+        <span class="status">${escapeHTML(s.state)}</span>
+        <small>${escapeHTML(s.message || "")} · buffer ${formatDuration(s.buffered_seconds || 0)} (${s.segments} segments, ${formatSize(s.bytes || 0)}) · ${s.pins} pinned · ${s.reconnects || 0} reconnects</small>
+        ${s.state === "active" ? `<button type="button" data-live-stop="${s.project_id}">Stop</button>` : ""}
+      </article>`,
+        )
+        .join("")
+    : '<p class="muted">No live sessions yet.</p>';
+}
+async function loadLive() {
+  renderLive(await api("/api/live"));
+}
+$("#live-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const result = await api("/api/live/start", {
+      kind: form.elements.kind.value,
+      source: form.elements.source.value.trim(),
+      title: form.elements.title.value.trim() || null,
+    });
+    notice(`Live session started: ${result.title || result.source}.`);
+    await loadLive();
+    await refreshProjects();
+  }),
+);
+$("#live-sessions").addEventListener(
+  "click",
+  safe(async (event) => {
+    const stop = event.target.closest("[data-live-stop]");
+    if (!stop) return;
+    const ok = await askDialog({
+      title: "Stop this live session?",
+      body: "Recording stops. Buffered footage, marked moments and finished clips are kept.",
+      confirmText: "Stop session",
+      danger: true,
+    });
+    if (!ok) return;
+    await api(`/api/live/${stop.dataset.liveStop}/stop`, {});
+    notice("Live session stopped.");
+    await loadLive();
+  }),
+);

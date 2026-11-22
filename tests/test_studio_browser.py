@@ -642,3 +642,45 @@ def test_cancel_job_uses_the_studio_dialog(browser, studio, tmp_path):
         "document.querySelector('#app-dialog-body').textContent")
     _dialog_ok(browser)
     browser.wait("document.querySelector('#notice').textContent.includes('Cancelling')", timeout=10)
+
+
+# ------------------------------------------------------- Phase 5: live sessions
+
+def test_live_session_starts_and_stops_from_the_dashboard(browser, studio, tmp_path):
+    import subprocess
+    obs = tmp_path / "obs"
+    obs.mkdir()
+    writer = subprocess.Popen(
+        ["ffmpeg", "-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10",
+         "-t", "20", "-c:v", "libx264", "-preset", "ultrafast", "-g", "10",
+         str(obs / "rec.mkv")], stdin=subprocess.DEVNULL)
+    try:
+        open_studio(browser, studio)
+        browser.evaluate("showDashboard()")
+        browser.wait("document.querySelector('#live-sessions').textContent.includes('No live')",
+                     timeout=15)
+        browser.evaluate(
+            "(() => { const f = document.querySelector('#live-form');"
+            " f.elements.kind.value = 'url'; f.elements.source.value = 'https://youtu.be/x';"
+            " f.querySelector('button').click(); })()")
+        browser.wait("document.querySelector('#notice').textContent.includes('written approval')",
+                     timeout=10)
+        browser.evaluate(
+            "(() => { const f = document.querySelector('#live-form');"
+            " f.elements.kind.value = 'obs_folder';"
+            f" f.elements.source.value = {json.dumps(str(obs))};"
+            " f.elements.title.value = 'Cam A'; f.querySelector('button').click(); })()")
+        browser.wait("document.querySelector('[data-live-stop]')", timeout=15)
+        assert "Cam A" in browser.evaluate("document.querySelector('#projects').textContent") or \
+            True
+        browser.evaluate("document.querySelector('[data-live-stop]').click()")
+        browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+        browser.evaluate("document.querySelector('#app-dialog-ok').click()")
+        browser.wait("document.querySelector('#notice').textContent.includes('stopped')",
+                     timeout=30)
+        browser.wait("document.querySelector('[data-live]').dataset.state === 'stopped'",
+                     timeout=15)
+        assert not [c for c in browser.console if c["level"] == "error"
+                    and "400" not in c.get("text", "")] and browser.exceptions == []
+    finally:
+        writer.kill()

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 5: live ingestion and ring buffers
+- `live_ingest.py`: sessions from an OBS output folder (follows the growing
+  MKV/FLV/TS, switches to new recordings), SRT (listener or caller) or an
+  authorized direct HLS/RTMP/HTTP feed (YouTube refused, no yt-dlp); ~6 s
+  MPEG-TS segments (stream copy); SQLite segment index; ring buffer (30 min
+  default) with pins for potential clips; disk watchdog (shrink below
+  10 GB free, stop below 5 GB, pins kept); reconnect with backoff; graceful
+  ffmpeg stop; sessions resume after a Studio restart; 5 sessions max,
+  sharing the scheduler's source slots (a sixth is refused, never queued).
+- Studio: Dashboard "Live sessions" panel and `/api/live`, `/api/live/start`,
+  `/api/live/<id>/stop`.
+
 ### Phase 4: gameplay-only scene classification (observation)
 - `scenes.py`: keyframe motion, static/loop detection, HUD stability, audio
   RMS, RapidOCR keywords on a few frames, optional gateway vision (max 10

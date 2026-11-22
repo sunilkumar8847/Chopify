@@ -23,3 +23,10 @@ gameplay). Real IRL recording (3490104f40dd, 178 s): analysed in 6.8 s, all
 labelled "gameplay" - motion cannot tell an IRL camera from a game, so
 filtering stays off; real labelled gaming recordings are needed to evaluate.
 8 tests.
+
+## Phase 5
+14 ingest tests with real ffmpeg streams: OBS folder follow + file switch,
+SRT listener with encoder restart (reconnect), five simultaneous OBS
+sessions with the sixth refused, Studio-restart resume without duplicate
+segments, ring/pin trimming, extract, disk watchdog. Browser test for the
+Live panel (incl. YouTube refusal). 990 passing.

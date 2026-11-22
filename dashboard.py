@@ -20,6 +20,7 @@ import applog
 import automation
 import envconfig
 import features
+import live_ingest
 import project_admin
 import scheduler as scheduler_mod
 import compliance
@@ -310,6 +311,16 @@ class Studio:
                 continue
         if self.scheduler is not None:
             self.scheduler.start()
+        # Phase 5: live ingestion sessions (OBS folder, SRT, direct URLs).
+        self.live = live_ingest.LiveManager(self.root, self.scheduler,
+                                            on_segment=self._live_segment)
+        self.live.recover()
+
+    def _live_segment(self, session, segment):
+        """Every new 6-second segment (Phase 6 clipping hooks in here)."""
+        hook = self.ai_jobs.get("live:segment")
+        if hook:
+            hook(session, segment)
 
     def busy(self, project_id):
         return self.jobs.busy(project_id) or bool(
@@ -1184,6 +1195,7 @@ class Studio:
             for child in list(self.processes):
                 child.terminate()
         self.jobs.shutdown()
+        self.live.shutdown()
         if self.scheduler is not None:
             self.scheduler.stop()
 
@@ -1327,6 +1339,9 @@ class Handler(BaseHTTPRequestHandler):
                     item["display_title"] = project_admin.display_title(item)
                 return self.send_json({"projects": items, "scheduler": (
                     self.app.scheduler.status() if self.app.scheduler is not None else None)})
+            if parts == ["api", "live"]:
+                return self.send_json({"sessions": self.app.live.status(),
+                                       "kinds": list(live_ingest.KINDS)})
             if parts == ["api", "overview"]:
                 return self.send_json(self.app.overview())
             if parts == ["api", "logs"]:
@@ -1399,6 +1414,19 @@ class Handler(BaseHTTPRequestHandler):
                                                     self.app.youtube_data()))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
+            if parts == ["api", "live", "start"]:
+                applog.info("live.request", "Live session start requested",
+                            kind=body.get("kind"))
+                try:
+                    return self.send_json(self.app.live.start(
+                        body.get("kind"), body.get("source"), body.get("title")), 201)
+                except live_ingest.LiveError as exc:
+                    raise ValueError(str(exc)) from exc
+            if len(parts) == 4 and parts[:2] == ["api", "live"] and parts[3] == "stop":
+                try:
+                    return self.send_json(self.app.live.stop(parts[2]))
+                except live_ingest.LiveError as exc:
+                    raise ValueError(str(exc)) from exc
             if parts == ["api", "scheduler"]:
                 if self.app.scheduler is None:
                     raise ValueError("The scheduler is turned off (feature flag).")

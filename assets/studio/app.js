@@ -2600,6 +2600,7 @@ function renderLive(data) {
         <strong>${escapeHTML(LIVE_KINDS[s.kind] || s.kind)} · ${escapeHTML(s.source)}</strong>
         <span class="status">${escapeHTML(s.state)}</span>
         <small>${escapeHTML(s.message || "")} · buffer ${formatDuration(s.buffered_seconds || 0)} (${s.segments} segments, ${formatSize(s.bytes || 0)}) · ${s.pins} pinned · ${s.reconnects || 0} reconnects</small>
+        ${(s.candidates || []).length ? `<ul class="live-candidates">${s.candidates.map((c) => `<li data-state="${escapeHTML(c.state)}">${formatDuration(c.peak)} · ${escapeHTML(c.state.replace("_", " "))}${c.score != null ? ` · ${Number(c.score).toFixed(1)}/10` : ""}${c.latency_seconds ? ` · ready in ${formatDuration(c.latency_seconds)}` : ""}${c.error && c.state === "ai_waiting" ? ` · ${escapeHTML(c.error)}` : ""}</li>`).join("")}</ul>` : ""}
         ${s.state === "active" ? `<button type="button" data-live-stop="${s.project_id}">Stop</button>` : ""}
       </article>`,
         )

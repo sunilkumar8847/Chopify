@@ -556,7 +556,8 @@ class Scheduler:
                 return
             failures = row["failures"] + 1
             if retry and failures < row["max_failures"]:
-                delay = float(self.settings["retry_backoff_seconds"]) * (2 ** (failures - 1))
+                delay = min(600.0, float(self.settings["retry_backoff_seconds"])
+                            * (2 ** (failures - 1)))
                 db.execute("UPDATE tasks SET state = 'queued', failures = ?, error = ?, "
                            "not_before = ?, lease_owner = NULL, pid = NULL, updated = ? "
                            "WHERE id = ?", (failures, str(error)[:500], now + delay, now, task_id))

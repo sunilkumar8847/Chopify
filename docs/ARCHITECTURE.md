@@ -133,6 +133,19 @@ second. `Ring.extract(start, end)` joins the covering segments for clipping.
 A new segment calls Studio's `_live_segment` hook (Phase 6). SRT and
 `-follow` are available in the bundled FFmpeg 9.0.2 build.
 
+## Upgrade Phase 6: continuous live clipping
+
+Segment hook -> `SessionClipper` thread (every 30 s of new footage: RMS at
+0.5 s steps, peaks z >= 4 over a 10-minute median/MAD baseline, 45 s
+cooldown) -> candidate pinned [peak-75 s, peak+45 s] -> when the payoff is
+buffered, scheduler `ai` task `live:judge` (transcribe pinned audio via the
+gateway route; refine to sentences, 15-120 s; judge with the generate
+route; keep at >= 6.5/10) -> `render` task `live:render` (join segments,
+`render_clips.render`, 9:16) -> pin released. Quota/rate limits raise a
+retryable error: the scheduler retries (30 s doubling, max 10 min), the
+candidate shows "ai waiting". With no AI route configured only strong
+spikes (z >= 6) are kept, marked not AI-judged.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

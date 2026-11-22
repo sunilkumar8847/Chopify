@@ -20,6 +20,7 @@ import applog
 import automation
 import envconfig
 import features
+import live_clipper as live_clipper_mod
 import live_ingest
 import project_admin
 import scheduler as scheduler_mod
@@ -311,6 +312,13 @@ class Studio:
                 continue
         if self.scheduler is not None:
             self.scheduler.start()
+        # Phase 6: continuous clipping of live sessions (needs the scheduler).
+        self.live_clipper = None
+        if self.scheduler is not None and features.enabled("live_clipping"):
+            self.live_clipper = live_clipper_mod.LiveClipper(self.scheduler)
+            self.ai_jobs["live:segment"] = self.live_clipper.on_segment
+            self.ai_jobs["live:judge"] = self.live_clipper.handle_judge
+            self.ai_jobs["live:render"] = self.live_clipper.handle_render
         # Phase 5: live ingestion sessions (OBS folder, SRT, direct URLs).
         self.live = live_ingest.LiveManager(self.root, self.scheduler,
                                             on_segment=self._live_segment)
@@ -357,6 +365,8 @@ class Studio:
         """Analysis (prepare) and render run the existing worker, one child each."""
         payload = task["payload"] or {}
         project_id = task["source_id"]
+        if payload.get("kind") in self.ai_jobs:          # live clip renders (Phase 6)
+            return self.ai_jobs[payload["kind"]](payload, cancel, project_id)
         path = projects.project_path(self.root, project_id)
         self.scheduler.on_cancel(project_id, lambda: self._cancel_process(project_id))
         code = self._run(path, payload.get("action", "prepare"), bool(payload.get("preview")),
@@ -377,7 +387,7 @@ class Studio:
         handler = self.ai_jobs.get(payload.get("kind"))
         if handler is None:
             raise scheduler_mod.SchedulerError(f"Unknown AI task {payload.get('kind')}.")
-        return handler(payload, cancel)
+        return handler(payload, cancel, task["source_id"])
 
     def _enqueue_scheduled(self, project_id, path, state, action, preview, pick):
         options = state.get("options") or {}
@@ -1196,6 +1206,8 @@ class Studio:
                 child.terminate()
         self.jobs.shutdown()
         self.live.shutdown()
+        if self.live_clipper is not None:
+            self.live_clipper.shutdown()
         if self.scheduler is not None:
             self.scheduler.stop()
 
@@ -1340,8 +1352,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"projects": items, "scheduler": (
                     self.app.scheduler.status() if self.app.scheduler is not None else None)})
             if parts == ["api", "live"]:
-                return self.send_json({"sessions": self.app.live.status(),
-                                       "kinds": list(live_ingest.KINDS)})
+                sessions = self.app.live.status()
+                clipper = self.app.live_clipper
+                for session in sessions:
+                    found = clipper.status(session["project_id"]) if clipper else []
+                    session["candidates"] = [{k: c.get(k) for k in (
+                        "id", "peak", "state", "score", "scene", "error", "latency_seconds")}
+                        for c in found[-20:]]
+                return self.send_json({"sessions": sessions, "kinds": list(live_ingest.KINDS),
+                                       "clipping": clipper is not None})
             if parts == ["api", "overview"]:
                 return self.send_json(self.app.overview())
             if parts == ["api", "logs"]:

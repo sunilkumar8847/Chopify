@@ -1776,3 +1776,14 @@ button.danger {
   grid-column: 1 / -1;
   color: var(--muted);
 }
+
+.live-candidates {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+.live-candidates [data-state="done"] {
+  color: var(--accent);
+}

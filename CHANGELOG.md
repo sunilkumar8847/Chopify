@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 6: continuous live clipping
+- `live_clipper.py`: per-session detection of loud moments (robust
+  median/MAD baseline, cooldown, hourly cap), ring pins for setup/payoff,
+  queued AI evaluation (gateway transcription + `highlights` judge) as
+  scheduler `ai` tasks that retry with backoff on quota/rate limits while
+  ingestion continues, boundary refinement (`boundaries.refine_segments`,
+  120 s hard maximum) and rendering with the unchanged `render_clips.render`
+  into the session's `clips` folder. Candidates persist in
+  `live/candidates.json`. Flag `live_clipping` (on).
+- Studio: live candidates and their state in the Live panel.
+
 ### Phase 5: live ingestion and ring buffers
 - `live_ingest.py`: sessions from an OBS output folder (follows the growing
   MKV/FLV/TS, switches to new recordings), SRT (listener or caller) or an

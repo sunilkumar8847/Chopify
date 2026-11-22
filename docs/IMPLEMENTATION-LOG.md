@@ -30,3 +30,11 @@ SRT listener with encoder restart (reconnect), five simultaneous OBS
 sessions with the sixth refused, Studio-restart resume without duplicate
 segments, ring/pin trimming, extract, disk watchdog. Browser test for the
 Live panel (incl. YouTube refusal). 990 passing.
+
+## Phase 6
+Simulated 95 s OBS feed with two loud bursts: two candidates on the bursts,
+two simulated quota errors retried, slow AI (4 s) while ingestion kept
+going, one accepted clip rendered for real (1080x1920, <=120 s, context
+before and after the moment, ready well under 5 min), one rejected, pins
+released, clip kept after stopping. Real Groq used only in Phase 9.
+992 passing.

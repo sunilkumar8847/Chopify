@@ -1943,6 +1943,7 @@ function updateDashBadge(data) {
 async function loadOverview() {
   renderOverview(await api("/api/overview"));
   await loadLive().catch((error) => notice(`Live sessions unavailable: ${error.message}`, true));
+  await loadWatchlist().catch(() => {});
   await loadAI().catch((error) => aiShow(`AI settings unavailable: ${error.message}`, true));
   await loadStorage().catch((error) =>
     showStorageResult(`Storage information unavailable: ${error.message}`, true),
@@ -2512,7 +2513,7 @@ $("#project-menu").addEventListener(
       const result = await api(`/api/projects/${id}/open-folder`, {});
       notice(`Opened ${result.opened}`);
     } else if (action === "storage") {
-      const plan = await api(`/api/storage/${id}/plan`);
+      const plan = await api(`/api/projects/${id}/storage`);
       const rows = Object.entries(plan.totals || {})
         .filter(([, bytes]) => bytes > 0)
         .map(([name, bytes]) => `<li>${escapeHTML(STORAGE_LABELS[name] || name)}: <strong>${formatSize(bytes)}</strong></li>`)
@@ -2734,5 +2735,69 @@ $("#consent-form").addEventListener(
     $("#consent-dialog").close("save");
     notice(`Auto-publish is on (${choices.visibility}).`);
     await loadConsent();
+  }),
+);
+
+// ------------------------------------------------------ discovery (Phase 8)
+function discoverCard(item, inList) {
+  return `<article class="discover-item" data-video="${escapeHTML(item.id)}">
+    <a href="${escapeHTML(item.url)}" target="_blank" rel="noopener">${item.thumbnail ? `<img src="${escapeHTML(item.thumbnail)}" alt="" loading="lazy">` : ""}</a>
+    <div><a href="${escapeHTML(item.url)}" target="_blank" rel="noopener"><strong>${escapeHTML(item.title)}</strong></a>
+    <small><a href="https://www.youtube.com/channel/${escapeHTML(item.channel_id)}" target="_blank" rel="noopener">${escapeHTML(item.channel_title)}</a>${item.live === "live" ? " · LIVE" : ""} · on YouTube${item.has_project ? " · already a project" : ""}</small>
+    ${inList ? `<button type="button" data-discover-remove="${escapeHTML(item.id)}">Remove</button>` : `<button type="button" data-discover-add="${escapeHTML(item.id)}">Add to list</button>`}</div>
+  </article>`;
+}
+function renderDiscover(result) {
+  state.discover = result;
+  $("#discover-usage").textContent = `${result.usage.search_left} SEARCHES LEFT TODAY`;
+  const attribution = $("#discover-attribution");
+  attribution.hidden = false;
+  attribution.textContent = `${result.attribution}${result.cached ? " (cached under 1 hour)" : ""}`;
+  $("#discover-results").innerHTML = result.items.length
+    ? result.items.map((item) => discoverCard(item, false)).join("")
+    : '<p class="muted">No results.</p>';
+}
+async function loadWatchlist() {
+  const result = await api("/api/discover/watch");
+  state.watch = result.items;
+  $("#discover-watch").innerHTML = result.items.length
+    ? result.items.map((item) => discoverCard(item, true)).join("")
+    : '<p class="muted">Nothing saved yet.</p>';
+}
+$("#discover-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const params = new URLSearchParams({
+      q: form.elements.q.value.trim(),
+      order: form.elements.order.value,
+      region: form.elements.region.value.trim().toUpperCase(),
+    });
+    if (form.elements.live.checked) params.set("live", "1");
+    renderDiscover(await api(`/api/discover?${params}`));
+  }),
+);
+$("#discover-popular").addEventListener(
+  "click",
+  safe(async () => {
+    const region = $("#discover-form").elements.region.value.trim().toUpperCase();
+    renderDiscover(await api(`/api/discover/popular?region=${encodeURIComponent(region)}`));
+  }),
+);
+document.addEventListener(
+  "click",
+  safe(async (event) => {
+    const add = event.target.closest("[data-discover-add]");
+    const remove = event.target.closest("[data-discover-remove]");
+    if (add) {
+      const item = (state.discover?.items || []).find((i) => i.id === add.dataset.discoverAdd);
+      await api("/api/discover/add", { item });
+      notice("Saved to your list (link only; nothing is downloaded).");
+      await loadWatchlist();
+    } else if (remove) {
+      await api("/api/discover/remove", { id: remove.dataset.discoverRemove });
+      await loadWatchlist();
+    }
   }),
 );

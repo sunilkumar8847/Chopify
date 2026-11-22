@@ -192,6 +192,30 @@
             </form>
           </section>
         </div>
+        <section id="discover-panel" class="panel dash-panel">
+          <div class="panel-title">
+            <h2>Discover gaming videos</h2>
+            <span id="discover-usage">OFFICIAL YOUTUBE DATA API</span>
+          </div>
+          <form id="discover-form" class="dash-settings discover-form" role="search">
+            <label>Game or keywords<input name="q" maxlength="100" placeholder="GTA 6" /></label>
+            <label class="check"><input type="checkbox" name="live" /> Live now</label>
+            <label>Order<select name="order">
+                <option value="relevance">Relevance</option>
+                <option value="date">Newest</option>
+                <option value="viewCount">Most viewed</option></select></label>
+            <label>Region<input name="region" maxlength="2" placeholder="IN" /></label>
+            <button type="submit">Search YouTube</button>
+            <button type="button" id="discover-popular">Popular gaming</button>
+          </form>
+          <p class="hint">Results come straight from YouTube and open on YouTube. "Add to list"
+            only remembers the link: Chopify never downloads YouTube videos.
+            <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a></p>
+          <p id="discover-attribution" class="discover-attribution" hidden></p>
+          <div id="discover-results" class="discover-results" aria-live="polite"></div>
+          <h3 class="ai-subtitle">Your list</h3>
+          <div id="discover-watch" class="discover-results"></div>
+        </section>
         <section id="live-panel" class="panel dash-panel">
           <div class="panel-title">
             <h2>Live sessions</h2>

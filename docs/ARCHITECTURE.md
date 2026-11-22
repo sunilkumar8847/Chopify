@@ -159,6 +159,17 @@ duplicate prevention (SHA-256). OAuth scopes and credentials unchanged.
 Chopify states that age restrictions and made-for-kids reviews are
 YouTube's decisions.
 
+## Upgrade Phase 8: discovery
+
+Verified against the YouTube API Services Developer Policies (2026-11-23):
+III.E.2 (no aggregation across content owners), III.C.5 / III.E.4.h (no
+modified, re-ranked or derived results), III.F.2 and the Branding
+Guidelines (YouTube attribution, links back), III.E.4.c/d (store or refresh
+at most 30 days), III.E.1 (no downloads). Discovery is therefore a search
+and link page: nothing is monitored per channel, nothing is combined across
+channels, nothing is downloaded. `GET /api/discover?q=&live=&order=&region=`,
+`/api/discover/popular`, `/api/discover/watch`, `POST /api/discover/add|remove`.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

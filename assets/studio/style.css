@@ -1796,3 +1796,27 @@ button.danger {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+
+.discover-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.discover-item {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.discover-item img {
+  width: 120px;
+  border-radius: 6px;
+}
+.discover-item small {
+  display: block;
+  color: var(--muted);
+  margin: 4px 0;
+}
+.discover-attribution {
+  font-weight: 600;
+}

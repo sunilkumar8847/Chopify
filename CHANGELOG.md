@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 8: YouTube gaming discovery (official Data API)
+- `discovery.py`: game/keyword search (`search.list`, Gaming category,
+  optional live-only, user-chosen order), YouTube's most-popular Gaming
+  chart per region, link-only watchlist ("Add" never downloads or creates a
+  project; duplicates refused). Results shown as returned with "Results from
+  YouTube" attribution, channel links and the YouTube Terms link; search
+  cache 1 h; watchlist refreshed via `videos.list` after 25 days and deleted
+  by 29 days; deleted videos removed; own search.list daily ledger (100);
+  everything deleted on YouTube disconnect.
+- Studio: Dashboard "Discover gaming videos" panel; CSP allows thumbnails
+  from i.ytimg.com only.
+- Fixes: concurrent discovery writes (shared lock, retrying replace);
+  "View storage" now reads its own `/api/projects/<id>/storage` endpoint
+  (the plan endpoint omitted totals).
+
 ### Phase 7: consent-based YouTube publishing
 - `publish_consent.py`: per-project (or live session) consent with an
   explicitly chosen destination channel, visibility (no default; public

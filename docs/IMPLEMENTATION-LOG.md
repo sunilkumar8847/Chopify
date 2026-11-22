@@ -46,3 +46,10 @@ via videos.list, duplicate prevention, score/daily-limit/channel checks,
 public confirmation, revocation), Studio hook test, consent browser test.
 No real uploads were made. A timing-sensitive cancel browser test now
 asserts the cancel request instead of a transient notice. 1008 passing.
+
+## Phase 8
+10 discovery tests (official parameters, YouTube order, dedupe, cache,
+daily limit, popular chart, link-only add, 25/29-day refresh/delete,
+forget-all, no download code) + browser test. Found and fixed a Windows
+file-replace race and the empty "View storage" dialog. 1019 passing. No
+real API calls were made in tests.

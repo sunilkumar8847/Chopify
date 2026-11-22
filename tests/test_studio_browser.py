@@ -588,7 +588,7 @@ def test_project_titles_rename_and_menu(browser, studio, tmp_path, monkeypatch):
     _menu(browser, project_id, "storage")
     browser.wait("document.querySelector('#app-dialog').open", timeout=10)
     body = browser.evaluate("document.querySelector('#app-dialog-body').textContent")
-    assert "Final clips" in body and "Total" in body
+    assert "Final clips: " in body and "Total" in body and "No files" not in body
     browser.evaluate("document.querySelector('#app-dialog-ok').click()")
     assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
 
@@ -739,3 +739,36 @@ def test_auto_publish_consent_dialog_requires_explicit_choices(browser, studio, 
     assert studio.app.consents.active_for(project_id) is None
     assert not [c for c in browser.console if c["level"] == "error"
                 and "400" not in c.get("text", "")] and browser.exceptions == []
+
+
+# ------------------------------------------------------- Phase 8: discovery
+
+def test_discovery_search_attributes_youtube_and_add_never_downloads(browser, studio,
+                                                                     tmp_path, monkeypatch):
+    import discovery
+    from test_discovery import FakeClient
+    client = FakeClient()
+    client.no_thumbnails = True
+    monkeypatch.setattr(studio.app, "discovery",
+                        lambda: discovery.Discovery(client, tmp_path / "disc"))
+    open_studio(browser, studio)
+    browser.evaluate("showDashboard()")
+    browser.wait("document.querySelector('#discover-form')", timeout=15)
+    browser.evaluate("(() => { const f = document.querySelector('#discover-form');"
+                     " f.elements.q.value = 'GTA 6'; f.elements.live.checked = true;"
+                     " f.querySelector('button[type=submit]').click(); })()")
+    browser.wait("document.querySelectorAll('.discover-item').length === 3", timeout=15)
+    assert browser.evaluate("document.querySelector('#discover-attribution').textContent") \
+        .startswith("Results from YouTube")
+    links = browser.evaluate("[...document.querySelectorAll('#discover-results a')]"
+                             ".map(a => a.href)")
+    assert all(link.startswith("https://www.youtube.com/") for link in links)
+    assert "LIVE" in browser.evaluate("document.querySelector('.discover-item').textContent")
+    browser.evaluate("document.querySelector('[data-discover-add]').click()")
+    browser.wait("document.querySelectorAll('#discover-watch .discover-item').length === 1",
+                 timeout=10)
+    assert "nothing is downloaded" in notice(browser)
+    assert studio.app.list_projects() == [], "Add never creates a project"
+    assert not browser.api_requests("/api/batch") and not browser.api_requests("/api/record")
+    assert [c[0] for c in client.calls] == ["search"]
+    assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []

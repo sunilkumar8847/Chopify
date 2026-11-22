@@ -19,6 +19,7 @@ import webbrowser
 import applog
 import automation
 import envconfig
+import discovery as discovery_mod
 import features
 import live_clipper as live_clipper_mod
 import live_ingest
@@ -544,6 +545,10 @@ class Studio:
     def youtube_data(self):
         """Read-only official Data API client (quota counted in the ledger)."""
         return youtube_data.DataClient(self.youtube, record_usage=self.uploads.record_api_call)
+
+    def discovery(self):
+        """Phase 8: official-API gaming discovery (no downloads, no scraping)."""
+        return discovery_mod.Discovery(self.youtube_data())
 
     def gpu_status(self):
         """Whether Whisper can use the GPU here (checked once per Studio run)."""
@@ -1302,7 +1307,7 @@ class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; media-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; media-src 'self'; img-src 'self' data: https://i.ytimg.com; frame-ancestors 'none'; base-uri 'none'")
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -1428,6 +1433,33 @@ class Handler(BaseHTTPRequestHandler):
                     item["display_title"] = project_admin.display_title(item)
                 return self.send_json({"projects": items, "scheduler": (
                     self.app.scheduler.status() if self.app.scheduler is not None else None)})
+            if parts[:2] == ["api", "discover"]:
+                query = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+                finder = self.app.discovery()
+                try:
+                    if parts == ["api", "discover"]:
+                        applog.info("discover.search", "Discovery search",
+                                    live=query.get("live") == "1")
+                        result = finder.search(query.get("q"), query.get("live") == "1",
+                                               query.get("order", "relevance"),
+                                               query.get("region"))
+                    elif parts == ["api", "discover", "popular"]:
+                        result = finder.popular(query.get("region"))
+                    elif parts == ["api", "discover", "watch"]:
+                        try:
+                            finder.refresh()
+                        except (youtube_data.DataApiError, OSError) as exc:
+                            applog.warning("discover.refresh", f"Watchlist refresh later: {exc}")
+                        result = {"items": finder.watchlist()}
+                    else:
+                        return self.send_json({"error": "Not found."}, 404)
+                except (discovery_mod.DiscoveryError, youtube_data.DataApiError) as exc:
+                    raise ValueError(str(exc)) from exc
+                existing = {automation.source_key(p.get("source") or "")
+                            for p in self.app.list_projects()}
+                for item in result.get("items", []):
+                    item["has_project"] = automation.source_key(item["url"]) in existing
+                return self.send_json({**result, "usage": finder.usage()})
             if parts == ["api", "live"]:
                 sessions = self.app.live.status()
                 clipper = self.app.live_clipper
@@ -1458,6 +1490,11 @@ class Handler(BaseHTTPRequestHandler):
                 if project is not None:
                     projects.project_path(self.app.root, project)   # validates id
                 return self.send_json(self.app.youtube_state(project))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "storage":
+                folder = project_admin.project_folder(self.app.root, parts[2])
+                found = storage.scan(folder)
+                return self.send_json({"totals": found["totals"], "total_bytes": found["bytes"],
+                                       "files": len(found["files"])})
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "consent":
                 return self.send_json(self.app.consent_state(parts[2]))
             if len(parts) == 3 and parts[:2] == ["api", "projects"]:
@@ -1512,6 +1549,15 @@ class Handler(BaseHTTPRequestHandler):
                                                     self.app.youtube_data()))
             if parts[:2] == ["api", "automation"]:
                 return self.automation_post(parts, body)
+            if parts in (["api", "discover", "add"], ["api", "discover", "remove"]):
+                finder = self.app.discovery()
+                try:
+                    if parts[2] == "add":
+                        # Remembers the link only: never downloads or creates a project.
+                        return self.send_json(finder.add(body.get("item")))
+                    return self.send_json({"removed": finder.remove(str(body.get("id")))})
+                except discovery_mod.DiscoveryError as exc:
+                    raise ValueError(str(exc)) from exc
             if parts == ["api", "live", "start"]:
                 applog.info("live.request", "Live session start requested",
                             kind=body.get("kind"))
@@ -1738,6 +1784,7 @@ class Handler(BaseHTTPRequestHandler):
                 url = app.youtube.begin_signin(open_browser=webbrowser.open)
                 result = {"url": url}
             elif parts == ["api", "youtube", "disconnect"]:
+                self.app.discovery().forget_all()
                 result = app.youtube.disconnect()
             elif parts == ["api", "youtube", "settings"]:
                 result = app.uploads.update_settings(body.get("settings"))

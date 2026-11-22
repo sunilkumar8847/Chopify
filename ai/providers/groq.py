@@ -23,6 +23,9 @@ from ai.base import (GENERATE, TRANSCRIBE, VISION, Generation, InvalidOutput, Mo
                      Provider, Segment, Transcription, Usage, Word)
 
 API = "https://api.groq.com/openai/v1"
+# Upload limits per file (console.groq.com/docs/speech-to-text): free plan 25 MB,
+# developer plan 100 MB. Chopify uses the free-plan limit for every plan.
+UPLOAD_LIMIT = media.MAX_PIECE_BYTES
 PRICES = "https://console.groq.com/docs/models"
 LANGUAGES = {"english": "en", "hindi": "hi", "urdu": "ur", "bengali": "bn", "marathi": "mr",
              "tamil": "ta", "telugu": "te", "punjabi": "pa", "gujarati": "gu", "nepali": "ne",
@@ -84,8 +87,13 @@ class GroqProvider(Provider):
         started = time.time()
         segments, total, billed = [], 0.0, 0.0
         detected, probability = "", 1.0
-        with media.audio_pieces(path) as pieces:
+        limit = UPLOAD_LIMIT
+        with media.audio_pieces(path, max_bytes=limit) as pieces:
             for piece_offset, piece, seconds in pieces:
+                content = piece.read_bytes()
+                if len(content) > limit:        # never assume: check what is sent
+                    raise media.PieceTooLarge(f"{piece.name} is {len(content) / 1e6:.1f} MB, "
+                                              f"over Groq's upload limit. Nothing was sent.", self.name)
                 fields = {"model": model_id, "response_format": "verbose_json",
                           "temperature": "0"}
                 if word_timestamps:
@@ -93,7 +101,7 @@ class GroqProvider(Provider):
                 if language:
                     fields["language"] = language
                 content_type, body = aihttp.multipart(
-                    fields, {"file": (piece.name, piece.read_bytes(), "audio/flac")})
+                    fields, {"file": (piece.name, content, "audio/flac")})
                 _, _, data = self._request("POST", f"{API}/audio/transcriptions",
                                            {"Content-Type": content_type}, body, timeout=300)
                 result = aihttp.json_body(self.name, data)

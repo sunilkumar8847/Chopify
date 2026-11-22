@@ -43,6 +43,7 @@ class Gateway:
         self.keys = keys or secrets.get
         self._settings = settings                   # tests inject settings
         self.cooldown = {}                          # provider -> retry not before (epoch)
+        self.limits = {}                            # provider -> last x-ratelimit-* values
         self.slots = {name: threading.BoundedSemaphore(PER_PROVIDER_CONCURRENCY)
                       for name in REGISTRY}
         self.cancelled = threading.Event()
@@ -159,11 +160,11 @@ class Gateway:
             policy.check(settings, adapter, capability, model, data_kind, estimate, self.ledger)
             wait = self.cooldown.get(name, 0) - self.clock.now()
             if wait > 0:
-                raise QuotaExhausted(f"{adapter.title} asked Chopify to wait {wait:.0f}s more "
-                                     "(rate limit). The request was not sent.", name)
+                raise QuotaExhausted(f"{adapter.title}{_plan(adapter)} rate limit: wait about "
+                                     f"{wait:.0f}s more. The request was not sent.", name)
         except AIError as exc:
             self.ledger.record(provider=name, model=model or "", capability=capability,
-                               status="blocked", data_kind=data_kind, error=exc,
+                               status=_status(exc, "blocked"), data_kind=data_kind, error=exc,
                                request_id=rid, project_id=project_id)
             applog.warning("ai.blocked", str(exc), provider=name, model=model,
                            capability=capability, request_id=rid)
@@ -175,7 +176,7 @@ class Gateway:
                 result = call(adapter, model)
         except AIError as exc:
             self.ledger.record(provider=name, model=model, capability=capability,
-                               status="error", data_kind=data_kind, error=exc,
+                               status=_status(exc, "error"), data_kind=data_kind, error=exc,
                                request_id=rid, project_id=project_id)
             return self._fallback(exc, capability, data_kind, call, sizes, project_id, settings,
                                   name)
@@ -206,15 +207,18 @@ class Gateway:
                 raise Cancelled("The AI request was cancelled.", adapter.name)
             try:
                 with self.slots[adapter.name]:
-                    return aihttp.request(adapter.name, method, url, headers, body, timeout,
-                                          http=self.http)
+                    response = aihttp.request(adapter.name, method, url, headers, body,
+                                              timeout, http=self.http)
+                self._note_limits(adapter, response[1])
+                return response
             except RateLimited as exc:
                 last = exc
                 wait = exc.retry_after if exc.retry_after is not None else 2 ** attempt
                 if wait > max_wait or attempt == retries:
                     self.cooldown[adapter.name] = self.clock.now() + max(wait, 1)
-                    raise QuotaExhausted(f"{adapter.title} rate limit: retry in about "
-                                         f"{wait:.0f}s. Nothing else was tried.",
+                    raise QuotaExhausted(f"{adapter.title}{_plan(adapter)} rate limit reached: "
+                                         f"retry in about {wait:.0f}s. The work is paused; "
+                                         "nothing was sent to another provider.",
                                          adapter.name) from exc
                 self.clock.sleep(wait)
             except TemporaryError as exc:
@@ -223,6 +227,27 @@ class Gateway:
                     raise
                 self.clock.sleep(min(30.0, 2 ** attempt + random.random()))
         raise last
+
+    def _note_limits(self, adapter, headers):
+        """Respect the account's live limits: pause before a limit is hit."""
+        limits = aihttp.rate_limits(headers)
+        if not limits:
+            return
+        self.limits[adapter.name] = {**limits, "checked": self.clock.now()}
+        resets = [limits.get(f"reset_{k}_s") or 1.0 for k in ("requests", "tokens")
+                  if limits.get(f"remaining_{k}") is not None and limits[f"remaining_{k}"] <= 0]
+        if resets:
+            self.cooldown[adapter.name] = max(self.cooldown.get(adapter.name, 0),
+                                              self.clock.now() + max(resets))
+
+
+def _plan(adapter):
+    return " free-plan" if adapter.name == "groq" and adapter.is_free(None) else ""
+
+
+def _status(exc, default):
+    """Ledger status: rate/quota limits are shown separately from failures."""
+    return "limited" if getattr(exc, "kind", "") in ("quota", "rate_limited") else default
 
 
 _gateway = None

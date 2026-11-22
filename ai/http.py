@@ -4,6 +4,7 @@ Uses the same stdlib client as the YouTube code (``youtube_auth.http_request``),
 so no new dependency. Error messages never contain request headers (keys).
 """
 import json
+import re
 import secrets
 import socket
 
@@ -30,11 +31,55 @@ def _message(body):
 
 
 def _retry_after(headers):
-    value = (headers or {}).get("retry-after")
+    headers = {str(k).lower(): v for k, v in (headers or {}).items()}
+    value = headers.get("retry-after")
     try:
-        return max(0.0, float(value)) if value is not None else None
+        if value is not None:
+            return max(0.0, float(value))
     except ValueError:
+        pass
+    # No Retry-After: wait for whichever exhausted limit resets
+    limits = rate_limits(headers)
+    resets = [limits[f"reset_{k}_s"] for k in ("requests", "tokens")
+              if f"reset_{k}_s" in limits and limits.get(f"remaining_{k}", 1) <= 0]
+    return max(resets) if resets else None
+
+
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+
+
+def parse_reset(value):
+    """Groq/OpenAI reset durations ("7.66s", "2m59.56s", "1h2m", "250ms") -> seconds."""
+    if value is None:
         return None
+    text = str(value).strip().lower()
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    parts = _DURATION.findall(text)
+    if not parts or "".join(n + u for n, u in parts) != text.replace(" ", ""):
+        return None
+    scale = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+    return sum(float(n) * scale[u] for n, u in parts)
+
+
+def rate_limits(headers):
+    """The account's live limits from x-ratelimit-* response headers (or {})."""
+    headers = {str(k).lower(): v for k, v in (headers or {}).items()}
+    out = {}
+    for kind in ("requests", "tokens"):
+        for field in ("limit", "remaining"):
+            value = headers.get(f"x-ratelimit-{field}-{kind}")
+            try:
+                if value is not None:
+                    out[f"{field}_{kind}"] = int(float(value))
+            except ValueError:
+                pass
+        reset = parse_reset(headers.get(f"x-ratelimit-reset-{kind}"))
+        if reset is not None:
+            out[f"reset_{kind}_s"] = reset
+    return out
 
 
 def request(provider, method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT,

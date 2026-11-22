@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS requests (
     model TEXT NOT NULL,
     capability TEXT NOT NULL,
     data_kind TEXT,
-    status TEXT NOT NULL,           -- ok | error | blocked
+    status TEXT NOT NULL,           -- ok | error | blocked | limited
     error_kind TEXT,
     error TEXT,
     latency_ms INTEGER,
@@ -100,13 +100,14 @@ class Ledger:
             rows = db.execute("""
                 SELECT provider, model, capability, COUNT(*),
                        SUM(status = 'ok'), SUM(status = 'error'), SUM(status = 'blocked'),
+                       SUM(status = 'limited'),
                        COALESCE(SUM(audio_seconds), 0) / 60.0,
                        COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
                        COALESCE(SUM(cost_usd), 0), AVG(CASE WHEN status = 'ok' THEN latency_ms END),
                        MIN(free)
                 FROM requests WHERE ts >= ? GROUP BY provider, model, capability
                 ORDER BY provider, model, capability""", (since,)).fetchall()
-        keys = ("provider", "model", "capability", "requests", "ok", "failed", "blocked",
+        keys = ("provider", "model", "capability", "requests", "ok", "failed", "blocked", "limited",
                 "audio_minutes", "input_tokens", "output_tokens", "cost_usd",
                 "avg_latency_ms", "free")
         out = []
@@ -118,6 +119,13 @@ class Ledger:
             item["free"] = bool(item["free"])
             out.append(item)
         return out
+
+    def last_limited(self):
+        """Latest rate/quota stop per provider: {provider: {ts, error}}."""
+        with self._db() as db:
+            rows = db.execute("SELECT provider, MAX(ts), error FROM requests "
+                              "WHERE status = 'limited' GROUP BY provider").fetchall()
+        return {p: {"ts": ts, "error": e} for p, ts, e in rows}
 
     def set_health(self, provider, ok, detail):
         with self.lock, self._db() as db:

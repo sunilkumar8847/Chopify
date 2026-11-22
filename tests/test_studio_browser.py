@@ -466,10 +466,17 @@ def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
 
 # ------------------------------------------------------- Phase 1: AI panel
 
-def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, studio, monkeypatch):
+def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, studio, monkeypatch,
+                                                                   tmp_path):
+    import envconfig
     from ai import gateway as ai_gateway
     ai_gateway.reset()
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    key = "gsk_" + "Q7w8E9r0" * 6
+    env = tmp_path / "app" / ".env"
+    env.parent.mkdir()
+    env.write_text(f"GROQ_API_KEY={key}\nCHOPIFY_GROQ_PLAN=free\n", encoding="utf-8")
+    monkeypatch.setenv("CHOPIFY_ENV_FILE", str(env))
+    envconfig.load(force=True)
     open_studio(browser, studio)
     browser.evaluate("showDashboard()")
     browser.wait("document.querySelectorAll('#ai-providers [data-provider]').length === 5",
@@ -481,11 +488,19 @@ def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, stud
     assert browser.evaluate("document.querySelector('#ai-summary').textContent") == "FREE-ONLY"
     groq = "document.querySelector('[data-provider=\"groq\"]')"
     assert "blocked" in browser.evaluate(f"{groq}.querySelector('.ai-privacy').textContent")
-    key = "gsk_" + "Q7w8E9r0" * 6
-    browser.evaluate(f"{groq}.querySelector('[data-ai-key]').value = {json.dumps(key)};"
-                     f"{groq}.querySelector('[data-ai-save-key]').click()")
-    browser.wait(f"{groq}.textContent.includes('…{key[-4:]}')", timeout=10)
-    assert browser.evaluate(f"{groq}.querySelector('[data-ai-key]').value") == ""
+    # Keys come only from .env: shown as configured + last 4, no key fields at all.
+    status = browser.evaluate(f"{groq}.querySelector('[data-ai-key-status]').textContent")
+    assert f"…{key[-4:]}" in status and "GROQ_API_KEY in .env" in status
+    assert browser.evaluate("document.querySelectorAll('[data-ai-key], [data-ai-save-key], "
+                            "[data-ai-remove-key], #ai-panel input[type=password]').length") == 0
+    openrouter = "document.querySelector('[data-provider=\"openrouter\"] [data-ai-key-status]')"
+    assert "add OPENROUTER_API_KEY" in browser.evaluate(f"{openrouter}.textContent")
+    banner = browser.evaluate("document.querySelector('#ai-env').textContent")
+    assert str(env) in banner and "Restart Studio after editing .env" in banner
+    assert browser.evaluate(f"{groq}.querySelector('[data-groq-plan]').dataset.groqPlan") == \
+        "free_plan"
+    assert browser.evaluate(f"{form}.elements.free_only.disabled") is True, "locked by .env"
+    assert browser.evaluate(f"{form}.elements.paid_calls.disabled") is True, "locked by .env"
     page = browser.evaluate("document.documentElement.outerHTML")
     assert key not in page and key[:12] not in page
     answer = browser.evaluate("fetch('/api/ai').then(r => r.text())", await_promise=True)
@@ -503,8 +518,6 @@ def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, stud
     usage = browser.evaluate("document.querySelector('#ai-usage-rows').textContent")
     assert "No AI requests yet" in usage
     assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
-    from ai import secrets
-    secrets.remove("groq")
 
 
 def test_no_new_native_dialogs():

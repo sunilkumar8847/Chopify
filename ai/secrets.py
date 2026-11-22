@@ -1,80 +1,57 @@
-"""API keys: Windows DPAPI-encrypted file (same scheme as the YouTube token) or
-environment variables. Keys never leave this module except to the provider
-request that needs them; the UI only ever sees "configured" and the last 4.
-"""
-import os
-import threading
+"""Provider API keys: read from ``.env`` (via ``envconfig``) or the OS environment.
 
+``.env`` in the Chopify folder is the single source of truth for provider
+keys. An operating-system environment variable with the same name wins over
+``.env``. Chopify never writes keys anywhere: to add, change or remove one,
+edit ``.env`` and restart Studio.
+
+Keys never leave this module except to the provider request that needs them;
+the UI only ever sees "configured", the source and the last four characters.
+
+Phase 1 kept keys in a DPAPI file (``ai_keys.bin``). That file is no longer
+read. If it exists, ``legacy_store()`` reports it (and which providers it
+holds, never values) so the user can move them to ``.env``; it is never
+deleted or overwritten here.
+"""
+import envconfig
 import youtube_auth
 
-KEYS_FILE = "ai_keys.bin"
+LEGACY_KEYS_FILE = "ai_keys.bin"
 ENV = {"groq": "GROQ_API_KEY", "openrouter": "OPENROUTER_API_KEY",
        "gemini": "GEMINI_API_KEY", "nvidia": "NVIDIA_API_KEY"}
-_lock = threading.Lock()
-
-
-def _path():
-    return youtube_auth.config_dir() / KEYS_FILE
-
-
-def _stored():
-    try:
-        data = youtube_auth._read_secret(_path())
-    except Exception:              # noqa: BLE001 - unreadable = no stored keys
-        return {}
-    return data if isinstance(data, dict) else {}
+YOUTUBE_API_KEY_ENV = "CHOPIFY_YOUTUBE_API_KEY"
 
 
 def get(provider):
-    """The key for a provider, or None. Environment variables win."""
+    """The key for a provider, or None."""
     env = ENV.get(provider)
-    if env and os.environ.get(env, "").strip():
-        return os.environ[env].strip()
-    value = _stored().get(provider)
-    return value if isinstance(value, str) and value else None
-
-
-def set(provider, key):
-    if provider not in ENV:
-        raise ValueError("Unknown provider.")
-    key = str(key or "").strip()
-    if not 8 <= len(key) <= 400 or any(c.isspace() for c in key):
-        raise ValueError("That does not look like an API key.")
-    with _lock:
-        data = _stored()
-        data[provider] = key
-        youtube_auth._write_secret(_path(), data)
-    return status(provider)
-
-
-def remove(provider):
-    with _lock:
-        data = _stored()
-        data.pop(provider, None)
-        if data:
-            youtube_auth._write_secret(_path(), data)
-        else:
-            try:
-                _path().unlink()
-            except OSError:
-                pass
-    return status(provider)
+    return envconfig.get(env) if env else None
 
 
 def status(provider):
     """Safe summary: never the key itself."""
     env = ENV.get(provider)
-    if env and os.environ.get(env, "").strip():
-        return {"configured": True, "source": "environment", "env": env,
-                "last4": os.environ[env].strip()[-4:]}
-    value = _stored().get(provider)
+    value = envconfig.get(env) if env else None
     if value:
-        return {"configured": True, "source": "stored", "env": env, "last4": value[-4:]}
+        return {"configured": True, "source": envconfig.source(env), "env": env,
+                "last4": value[-4:]}
     return {"configured": False, "source": None, "env": env, "last4": None}
+
+
+def legacy_store():
+    """Is the old Phase 1 DPAPI key file present? Names only, never values."""
+    path = youtube_auth.config_dir() / LEGACY_KEYS_FILE
+    if not path.exists():
+        return {"exists": False, "path": str(path), "providers": []}
+    try:
+        data = youtube_auth._read_secret(path)
+        names = sorted(k for k, v in data.items() if isinstance(v, str) and v) \
+            if isinstance(data, dict) else []
+    except Exception:              # noqa: BLE001 - unreadable: just report it exists
+        names = []
+    return {"exists": True, "path": str(path), "providers": names}
 
 
 def all_keys():
     """Every configured key value (for log redaction only)."""
-    keys = [v for v in _stored().values() if isinstance(v, str)]
-    keys += [os.environ[e] for e in ENV.values() if os.environ.get(e)]
-    return [k for k in keys if len(k) >= 8]
+    return [v for v in (get(p) for p in ENV) if v and len(v) >= 8]

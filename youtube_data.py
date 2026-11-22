@@ -19,10 +19,10 @@ Developer Policies III.E.2: API data from different content owners must not be
 aggregated, so monitoring covers only the connected channel.
 """
 import json
-import os
 import re
 from urllib.parse import urlencode
 
+import envconfig
 import youtube_auth
 
 API_KEY_ENV = "CHOPIFY_YOUTUBE_API_KEY"
@@ -57,7 +57,7 @@ class DataClient:
         self.account = account
         self.record_usage = record_usage          # (bucket, units) for API-key calls
         self.http = http or youtube_auth.http_request
-        self.api_key = api_key if api_key is not None else os.environ.get(API_KEY_ENV, "")
+        self.api_key = api_key if api_key is not None else (envconfig.get(API_KEY_ENV) or "")
 
     def connected(self):
         try:

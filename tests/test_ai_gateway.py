@@ -317,7 +317,17 @@ def test_gemini_free_and_nvidia_trial_only_get_synthetic_data(tmp_path):
     sent = json.loads(http.calls[0]["body"])
     assert sent["generationConfig"]["responseMimeType"] == "application/json"
     assert http.calls[0]["headers"]["x-goog-api-key"] == "gemini-test-key-123456"
+    # NVIDIA: each trial model must be approved (model card terms read) first.
+    calls = len(http.calls)
+    with pytest.raises(PolicyBlocked, match="not approved"):
+        g.generate("s", "synthetic", data_kind=SYNTHETIC,
+                   route="nvidia:meta/llama-3.3-70b-instruct")
+    assert len(http.calls) == calls
+    g = gw(tmp_path, http, providers={"nvidia": {"enabled": True,
+                                                 "models": ["meta/llama-3.3-70b-instruct"]}})
     g.generate("s", "synthetic", data_kind=SYNTHETIC, route="nvidia:meta/llama-3.3-70b-instruct")
+    with pytest.raises(PrivacyBlocked):
+        g.generate("s", "real transcript", route="nvidia:meta/llama-3.3-70b-instruct")
 
 
 def test_gemini_paid_real_data_needs_explicit_approval(tmp_path):
@@ -405,23 +415,6 @@ def test_policy_block_does_not_fall_back_to_another_cloud(tmp_path):
 
 
 # -------------------------------------------------------------- secrets
-
-def test_keys_are_encrypted_and_only_last4_is_shown(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    key = "gsk_" + "A1b2C3d4" * 6
-    status = secrets.set("groq", key)
-    assert status == {"configured": True, "source": "stored", "env": "GROQ_API_KEY",
-                      "last4": key[-4:]}
-    raw = secrets._path().read_bytes()
-    assert key.encode() not in raw, "stored encrypted"
-    assert secrets.get("groq") == key
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_" + "Z" * 40)
-    assert secrets.status("groq")["source"] == "environment"
-    monkeypatch.delenv("GROQ_API_KEY")
-    assert secrets.remove("groq")["configured"] is False and secrets.get("groq") is None
-    with pytest.raises(ValueError):
-        secrets.set("groq", "short")
-
 
 @pytest.mark.parametrize("key", ["gsk_" + "A1b2C3d4" * 6, "sk-or-v1-" + "ab12" * 16,
                                  "nvapi-" + "Xy_9" * 12, "AIza" + "Sy0" * 12])

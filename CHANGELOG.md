@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Configuration: `.env` for provider keys
+- New `envconfig.py`: the single `.env` loader (python-dotenv parser). Reads
+  `.env` from the Chopify folder regardless of the working directory; OS
+  environment variables win; values stay out of `os.environ`; malformed or
+  missing files never stop Chopify and are reported by line number only.
+- Provider keys (`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+  `NVIDIA_API_KEY`) and `CHOPIFY_YOUTUBE_API_KEY` come only from `.env` / the
+  environment. Studio's Save/Remove key actions are gone (the API answers 410);
+  the AI panel shows the `.env` path, configured status and last 4 characters.
+  The old `ai_keys.bin` is no longer read and is reported, never deleted.
+- `.env` spending settings are defaults and ceilings (`CHOPIFY_AI_*`); Groq
+  plan from `CHOPIFY_GROQ_PLAN`, default free.
+- Groq free plan: live `x-ratelimit-*` headers respected (pause before the
+  limit), 429 without Retry-After waits for the reset, "limited" requests
+  counted and shown separately; every audio piece size-checked before upload.
+- NVIDIA trial: cannot be a project route; each model must be approved first.
+- Logs also redact the exact values of secret variables. `.gitignore` covers
+  `.env`, `.env.*` (not `.env.example`) and `ai_keys.bin`.
+
 ### AI Gateway (Phase 1)
 - `ai/` package: one gateway for transcription, text/JSON and vision with
   interchangeable providers (local faster-whisper + Ollama, Groq, OpenRouter,

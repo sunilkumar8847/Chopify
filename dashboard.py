@@ -17,6 +17,7 @@ import webbrowser
 
 import applog
 import automation
+import envconfig
 import compliance
 import youtube_data
 import download_and_transcribe as dt
@@ -1236,12 +1237,9 @@ class Handler(BaseHTTPRequestHandler):
                             provider=provider if isinstance(provider, str) else None)
                 if action == "settings":
                     ai_studio.apply(body)
-                elif action == "key":
-                    status = ai_studio.set_key(provider, body.get("key"))
-                    return self.send_json({"provider": provider, "key": status})
-                elif action == "key-remove":
-                    return self.send_json({"provider": provider,
-                                           "key": ai_studio.remove_key(provider)})
+                elif action in ("key", "key-remove"):
+                    # Keys live only in .env; the request body (a key?) is ignored.
+                    return self.send_json({"error": ai_studio.KEYS_IN_ENV}, 410)
                 elif action == "health":
                     from ai import gateway as ai_gateway
                     if not isinstance(provider, str):
@@ -1503,6 +1501,13 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    env = envconfig.status()        # read .env first (names only are logged, never values)
+    applog.info("env.loaded" if env["exists"] else "env.missing",
+                f".env {'loaded' if env['exists'] else 'not found'}: {env['path']}",
+                variables=len(env["names"]), bad_lines=env["bad_lines"] or None)
+    if env["error"] or env["bad_lines"]:
+        applog.warning("env.problem", env["error"] or
+                       f".env lines {env['bad_lines']} could not be read and were ignored.")
     server = make_server(args.projects_dir, args.port)
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Chopify Studio: {url}\nProjects: {server.app.root}\n"

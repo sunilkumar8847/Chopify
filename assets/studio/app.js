@@ -2213,6 +2213,28 @@ function renderAI(data) {
   form.elements.daily_paid_budget_usd.value = s.daily_paid_budget_usd;
   form.elements.monthly_paid_budget_usd.value = s.monthly_paid_budget_usd;
   form.elements.local_fallback.checked = s.local_fallback;
+  const env = data.env;
+  const lim = env.limits;
+  // .env sets the ceilings: Studio can be stricter, never looser.
+  form.elements.free_only.disabled = lim.free_only;
+  form.elements.paid_calls.disabled = !lim.paid_calls;
+  form.elements.daily_paid_budget_usd.max = lim.daily_paid_budget_usd;
+  form.elements.monthly_paid_budget_usd.max = lim.monthly_paid_budget_usd;
+  form.elements.daily_paid_budget_usd.disabled = lim.daily_paid_budget_usd <= 0;
+  form.elements.monthly_paid_budget_usd.disabled = lim.monthly_paid_budget_usd <= 0;
+  const locks = [
+    lim.free_only ? `free-only is required by ${env.vars.free_only}=true` : "",
+    lim.paid_calls ? "" : `paid calls are off by ${env.vars.paid_calls}=false`,
+    `budgets at most $${lim.daily_paid_budget_usd}/day and $${lim.monthly_paid_budget_usd}/month`,
+  ].filter(Boolean);
+  const legacy = data.legacy_keys.exists
+    ? `<p class="error">An older encrypted key file from Phase 1 exists (${escapeHTML(data.legacy_keys.path)}${data.legacy_keys.providers.length ? `, holding keys for ${escapeHTML(data.legacy_keys.providers.join(", "))}` : ""}). It is no longer read: put those keys in .env. The file was not changed or deleted.</p>`
+    : "";
+  $("#ai-env").innerHTML = `<p class="hint"><strong>API keys and spending limits come from</strong> <code>${escapeHTML(env.path)}</code> ${env.exists ? "(found)" : "(not found: copy .env.example to .env)"}. Studio never shows or stores full keys. <strong>Restart Studio after editing .env.</strong> Windows environment variables with the same name win over .env.</p>
+    <p class="hint">From .env: ${escapeHTML(locks.join("; "))}.</p>
+    ${env.error ? `<p class="error">${escapeHTML(env.error)}</p>` : ""}
+    ${env.bad_lines.length ? `<p class="error">.env lines ${escapeHTML(env.bad_lines.join(", "))} could not be read and were ignored.</p>` : ""}
+    ${legacy}`;
   $("#ai-summary").textContent = s.free_only
     ? "FREE-ONLY"
     : s.paid_calls
@@ -2249,26 +2271,34 @@ function renderAI(data) {
         p.name === "local"
           ? "No key needed"
           : p.key.configured
-            ? `Key configured · …${escapeHTML(p.key.last4)} (${p.key.source === "environment" ? `from ${escapeHTML(p.key.env)}` : "stored encrypted"})`
-            : `No key${p.key.env ? ` (or set ${escapeHTML(p.key.env)})` : ""}`;
+            ? `Key configured · …${escapeHTML(p.key.last4)} (${p.key.source === "environment" ? `Windows environment variable ${escapeHTML(p.key.env)}` : `${escapeHTML(p.key.env)} in .env`})`
+            : `No key: add ${escapeHTML(p.key.env)}=… to .env, then restart Studio`;
+      const rl = p.rate_limits;
+      const limits = rl
+        ? `<p class="hint">Account limits (from ${escapeHTML(p.title)}'s last response): ${rl.remaining_requests ?? "?"}/${rl.limit_requests ?? "?"} requests, ${rl.remaining_tokens ?? "?"}/${rl.limit_tokens ?? "?"} tokens left.</p>`
+        : "";
+      const limited = p.last_limited
+        ? `<p class="error">Paused by a rate/free-tier limit ${relTime(p.last_limited.ts)}: ${escapeHTML(p.last_limited.error || "")}</p>`
+        : "";
       const health = p.health
         ? `${p.health.ok ? "Healthy" : "Problem"}: ${escapeHTML(p.health.detail)} · ${relTime(p.health.checked)}`
         : "Not checked yet";
       const extra =
         p.name === "groq"
-          ? `<label>Groq plan<select data-groq-billing><option value="unknown" ${p.settings.billing === "unknown" ? "selected" : ""}>Unknown (treated as paid)</option><option value="free_plan" ${p.settings.billing === "free_plan" ? "selected" : ""}>Free plan (no charges)</option><option value="paid" ${p.settings.billing === "paid" ? "selected" : ""}>Developer plan (paid)</option></select></label>
+          ? `<p class="hint" data-groq-plan="${escapeHTML(p.settings.billing)}">Groq plan: <strong>${p.settings.billing === "free_plan" ? "Free (no charges; free-tier rate limits apply)" : p.settings.billing === "paid" ? "Developer (paid, blocked while free-only is on)" : "Unknown (treated as paid and blocked)"}</strong> · set by ${escapeHTML(data.env.vars.groq_plan)} in .env. Chopify never upgrades your plan.</p>
              ${p.settings.zdr_confirmed_at ? `<p class="hint">Zero Data Retention confirmed ${relTime(p.settings.zdr_confirmed_at)}. <button type="button" class="link" data-ai-revoke="groq:zdr">Withdraw</button></p>` : `<label class="check"><input type="checkbox" data-zdr-check /> I turned on Zero Data Retention in Groq Console &gt; Settings &gt; Data Controls (Groq has no API to check this)</label><button type="button" data-ai-confirm="groq:zdr">Confirm for real recordings</button>`}`
           : p.name === "gemini"
             ? `<label>Gemini tier<select data-gemini-tier><option value="free" ${p.settings.tier === "free" ? "selected" : ""}>Free (synthetic test data only)</option><option value="paid" ${p.settings.tier === "paid" ? "selected" : ""}>Paid</option></select></label>`
-            : "";
+            : p.name === "nvidia"
+              ? `<p class="hint">Trial: internal evaluation with synthetic data only. Never used for projects or as a fallback.</p><label>Approved trial models (comma-separated, only after reading each model card's terms)<input data-ai-models value="${escapeHTML((p.settings.models || []).join(", "))}" placeholder="none approved" /></label>`
+              : "";
       return `<article class="ai-provider" data-provider="${p.name}">
         <header><strong>${escapeHTML(p.title)}</strong>
           <label class="check"><input type="checkbox" data-ai-enabled ${p.enabled ? "checked" : ""} ${p.name === "local" ? "" : ""}/> Enabled</label></header>
         <p class="hint">${escapeHTML(p.role)}</p>
         <p class="ai-privacy" data-state="${escapeHTML(p.privacy.real_media)}">Privacy: real recordings ${escapeHTML(p.privacy.real_media)} — ${escapeHTML(p.privacy.detail)} <a href="${escapeHTML(p.terms_url || "#")}" target="_blank" rel="noopener">terms</a></p>
-        <p class="hint">${key}</p>
-        ${p.name === "local" ? "" : `<div class="dash-inline"><input type="password" autocomplete="off" data-ai-key placeholder="Paste API key" /><button type="button" data-ai-save-key>Save key</button>${p.key.configured && p.key.source === "stored" ? `<button type="button" data-ai-remove-key>Remove key</button>` : ""}</div>`}
-        ${extra}
+        <p class="hint" data-ai-key-status>${key}</p>
+        ${extra}${limits}${limited}
         <div class="dash-inline"><button type="button" data-ai-health>Check health</button><small>${health}</small></div>
       </article>`;
     })
@@ -2277,7 +2307,7 @@ function renderAI(data) {
     ? data.usage
         .map(
           (u) =>
-            `<tr><td>${escapeHTML(u.provider)}</td><td>${escapeHTML(u.model)}</td><td>${escapeHTML(u.capability)}</td><td>${u.requests}</td><td>${u.failed} / ${u.blocked}</td><td>${u.audio_minutes}</td><td>${u.input_tokens} / ${u.output_tokens}</td><td>$${Number(u.cost_usd).toFixed(4)}</td><td>${u.avg_latency_ms ?? "–"} ms</td><td>${u.free ? "free" : "paid"}</td></tr>`,
+            `<tr><td>${escapeHTML(u.provider)}</td><td>${escapeHTML(u.model)}</td><td>${escapeHTML(u.capability)}</td><td>${u.requests}</td><td>${u.failed} / ${u.blocked} / ${u.limited}</td><td>${u.audio_minutes}</td><td>${u.input_tokens} / ${u.output_tokens}</td><td>$${Number(u.cost_usd).toFixed(4)}</td><td>${u.avg_latency_ms ?? "–"} ms</td><td>${u.free ? "free" : "paid"}</td></tr>`,
         )
         .join("")
     : '<tr><td colspan="10" class="muted">No AI requests yet.</td></tr>';
@@ -2306,14 +2336,18 @@ $("#ai-mode-form").addEventListener(
     for (const card of document.querySelectorAll("#ai-providers [data-provider]")) {
       const name = card.dataset.provider;
       providers[name] = { enabled: card.querySelector("[data-ai-enabled]").checked };
-      const billing = card.querySelector("[data-groq-billing]");
-      if (billing) providers[name].billing = billing.value;
+      const models = card.querySelector("[data-ai-models]");
+      if (models)
+        providers[name].models = models.value
+          .split(",")
+          .map((m) => m.trim())
+          .filter(Boolean);
       const tier = card.querySelector("[data-gemini-tier]");
       if (tier) providers[name].tier = tier.value;
     }
     await aiPost("settings", {
-      free_only: form.elements.free_only.checked,
-      paid_calls: form.elements.paid_calls.checked,
+      free_only: form.elements.free_only.disabled || form.elements.free_only.checked,
+      paid_calls: !form.elements.paid_calls.disabled && form.elements.paid_calls.checked,
       daily_paid_budget_usd: Number(form.elements.daily_paid_budget_usd.value) || 0,
       monthly_paid_budget_usd: Number(form.elements.monthly_paid_budget_usd.value) || 0,
       local_fallback: form.elements.local_fallback.checked,
@@ -2335,17 +2369,7 @@ $("#ai-providers").addEventListener(
     const card = event.target.closest("[data-provider]");
     if (!card) return;
     const provider = card.dataset.provider;
-    if (event.target.matches("[data-ai-save-key]")) {
-      const input = card.querySelector("[data-ai-key]");
-      const key = input.value.trim();
-      input.value = "";
-      if (!key) throw new Error("Paste the API key first.");
-      await aiPost("key", { provider, key });
-      aiShow(`${provider}: key saved (encrypted). Only its last 4 characters are shown.`);
-    } else if (event.target.matches("[data-ai-remove-key]")) {
-      await aiPost("key-remove", { provider });
-      aiShow(`${provider}: stored key removed.`);
-    } else if (event.target.matches("[data-ai-health]")) {
+    if (event.target.matches("[data-ai-health]")) {
       const result = await aiPost("health", { provider });
       aiShow(`${provider}: ${result.ok ? "healthy" : "problem"} — ${result.detail}`, !result.ok);
     } else if (event.target.matches("[data-ai-confirm]")) {

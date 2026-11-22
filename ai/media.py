@@ -1,7 +1,9 @@
 """Minimum media for cloud requests: audio pieces and small frames.
 
 Audio is sent as 16 kHz mono FLAC pieces (about 11 MB per 10 minutes, under
-Groq's 25 MB free-tier upload limit). Frames are downscaled JPEGs. Temporary
+Groq's 25 MB free-tier upload limit). Every piece's size is checked: a piece
+over the limit is split in half (down to 60 s); a piece that still does not
+fit is refused, never uploaded. Frames are downscaled JPEGs. Temporary
 pieces live next to the source audio (on the project's drive) and are deleted
 after use.
 """
@@ -11,8 +13,19 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from ai.base import PermanentError
+
 PIECE_SECONDS = 600.0
-MAX_PIECE_BYTES = 24 * 1024 * 1024
+# Groq free plan: 25 MB per file (developer plan 100 MB). Decimal megabytes
+# with a margin, so "25 MB" read either way is never exceeded.
+MAX_PIECE_BYTES = 24_000_000
+MIN_PIECE_SECONDS = 60.0
+
+
+class PieceTooLarge(PermanentError):
+    """A piece of audio cannot be made small enough for the upload limit."""
+
+
 FRAME_WIDTH = 512
 
 
@@ -24,9 +37,13 @@ def probe_duration(path):
 
 
 @contextmanager
-def audio_pieces(path, piece_seconds=None, duration=None):
-    """Yield [(offset_seconds, flac_path, seconds)] covering the whole file."""
+def audio_pieces(path, piece_seconds=None, duration=None, max_bytes=None):
+    """Yield [(offset_seconds, flac_path, seconds)] covering the whole file.
+
+    Every piece is at most ``max_bytes`` (default MAX_PIECE_BYTES) on disk.
+    """
     piece_seconds = piece_seconds or PIECE_SECONDS
+    max_bytes = max_bytes or MAX_PIECE_BYTES
     path = Path(path)
     total = float(duration) if duration else probe_duration(path)
     folder = Path(tempfile.mkdtemp(prefix=".ai-pieces-", dir=str(path.parent)))
@@ -39,10 +56,15 @@ def audio_pieces(path, piece_seconds=None, duration=None):
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}",
                             "-t", f"{length:.3f}", "-i", str(path), "-vn", "-ac", "1",
                             "-ar", "16000", "-c:a", "flac", str(out)], check=True)
-            if out.stat().st_size > MAX_PIECE_BYTES and length > 60:
-                # unusually dense audio: halve the piece and try again
+            size = out.stat().st_size
+            if size > max_bytes:
                 out.unlink()
-                piece_seconds = length / 2
+                if length <= MIN_PIECE_SECONDS:
+                    raise PieceTooLarge(
+                        f"A {length:.0f}s piece of audio is {size / 1e6:.1f} MB, over the "
+                        f"{max_bytes / 1e6:.0f} MB upload limit. Nothing was uploaded.")
+                # unusually dense audio: halve the piece and try again
+                piece_seconds = max(MIN_PIECE_SECONDS, length / 2)
                 continue
             pieces.append((start, out, length))
             start += length

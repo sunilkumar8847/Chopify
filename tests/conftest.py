@@ -44,3 +44,20 @@ def _legacy_youtube_paths(monkeypatch, request):
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "compliance_default: run with YouTube downloads at their real default (off)")
+
+
+ENV_NAMES = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "NVIDIA_API_KEY",
+             "CHOPIFY_YOUTUBE_API_KEY", "CHOPIFY_AI_FREE_ONLY", "CHOPIFY_AI_ALLOW_PAID",
+             "CHOPIFY_AI_DAILY_BUDGET_USD", "CHOPIFY_AI_MONTHLY_BUDGET_USD",
+             "CHOPIFY_AI_LOCAL_FALLBACK", "CHOPIFY_GROQ_PLAN")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env_file(monkeypatch, tmp_path_factory):
+    # Tests never read the real .env (your API keys) or provider variables
+    # set in Windows; a test that needs a .env writes its own.
+    for name in ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CHOPIFY_ENV_FILE", str(tmp_path_factory.mktemp("env") / ".env"))
+    import envconfig
+    envconfig.load(force=True)

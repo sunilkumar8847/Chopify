@@ -72,6 +72,15 @@ def redact(text):
     text = str(text)
     for pattern, replacement in _SECRETS:
         text = pattern.sub(replacement, text)
+    try:
+        # Exact values of secret variables from .env / the environment, whatever
+        # their format (keys that match no pattern above).
+        import envconfig
+        for value in envconfig.secret_values():
+            if value in text:
+                text = text.replace(value, "[redacted-key]")
+    except Exception:              # noqa: BLE001 - redaction must never break logging
+        pass
     return text
 
 

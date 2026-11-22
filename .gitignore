@@ -31,3 +31,12 @@ _site/
 # local AI agent state
 .mimosa/
 .zcode/
+
+# Secrets and local environment (any folder depth)
+.env
+.env.*
+!.env.example
+
+# Other local secret files
+ai_keys.bin
+*.bin.*.tmp

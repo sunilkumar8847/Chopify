@@ -211,6 +211,7 @@
             <button type="submit">Save AI settings</button>
           </form>
           <p id="ai-result" class="hint" role="status" hidden></p>
+          <div id="ai-env" class="ai-env"></div>
           <div id="ai-providers" class="ai-providers"></div>
           <h3 class="ai-subtitle">Usage (last 30 days)</h3>
           <div class="table-wrap">
@@ -218,7 +219,7 @@
               <thead>
                 <tr>
                   <th>Provider</th><th>Model</th><th>Capability</th><th>Requests</th>
-                  <th>Failed / blocked</th><th>Audio min</th><th>Tokens in / out</th>
+                  <th>Failed / blocked / limited</th><th>Audio min</th><th>Tokens in / out</th>
                   <th>Cost</th><th>Avg latency</th><th>Free</th>
                 </tr>
               </thead>

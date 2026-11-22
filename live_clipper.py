@@ -233,8 +233,10 @@ class SessionClipper:
 class LiveClipper:
     """Connects live sessions, the scheduler and the AI Gateway."""
 
-    def __init__(self, scheduler, settings=None, transcribe=None, judge=None, render=None):
+    def __init__(self, scheduler, settings=None, transcribe=None, judge=None, render=None,
+                 on_clip=None):
         self.scheduler = scheduler
+        self.on_clip = on_clip        # (project_id, clip_path, candidate) after each render
         self.settings = {"detect_every": DETECT_EVERY, "z_threshold": Z_THRESHOLD,
                          "cooldown": COOLDOWN, "pre_context": PRE_CONTEXT,
                          "post_context": POST_CONTEXT, "min_score": MIN_SCORE,
@@ -343,6 +345,12 @@ class LiveClipper:
                        latency_seconds=round(time.time() - item["detected_at"], 1))
         applog.info("live.clip", f"Live clip ready: {Path(out).name}", project_id=project_id,
                     candidate=item["id"])
+        if self.on_clip:
+            try:
+                self.on_clip(project_id, Path(out), clipper.get(item["id"]))
+            except Exception as exc:           # noqa: BLE001 - publishing must not undo a clip
+                applog.warning("publish.auto", f"Auto-publish skipped: {exc}",
+                               project_id=project_id)
         return {"clip": str(out)}
 
     # building blocks ---------------------------------------------------

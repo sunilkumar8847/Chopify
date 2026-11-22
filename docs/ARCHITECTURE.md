@@ -146,6 +146,19 @@ retryable error: the scheduler retries (30 s doubling, max 10 min), the
 candidate shows "ai waiting". With no AI route configured only strong
 spikes (z >= 6) are kept, marked not AI-judged.
 
+## Upgrade Phase 7: consent-based publishing
+
+Consents live in `%APPDATA%\Chopify\publish_consents.json` (one active per
+project; replaced/revoked ones kept). A clip finishing (live render or
+scheduled Export) calls `Studio.offer_clip` -> `AutoPublisher.offer`, which
+checks consent, score, connected channel and the consent's daily limit,
+renders the templates, cleans them (`publish_meta.clean`) and calls the
+existing `UploadQueue.draft` + `approve(confirm=True)` with `consent_id`.
+Uploads keep using the resumable videos.insert flow with quota ledger and
+duplicate prevention (SHA-256). OAuth scopes and credentials unchanged.
+Chopify states that age restrictions and made-for-kids reviews are
+YouTube's decisions.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

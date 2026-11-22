@@ -641,7 +641,14 @@ def test_cancel_job_uses_the_studio_dialog(browser, studio, tmp_path):
     assert "Clips already made are kept" in browser.evaluate(
         "document.querySelector('#app-dialog-body').textContent")
     _dialog_ok(browser)
-    browser.wait("document.querySelector('#notice').textContent.includes('Cancelling')", timeout=10)
+    # The cancel request is sent only after the dialog's confirmation (the
+    # "Cancelling..." notice can be replaced quickly by the next status notice).
+    browser.wait("document.querySelector('#app-dialog').open === false", timeout=10)
+    deadline = time.time() + 10
+    while not [r for r in browser.api_requests("/cancel") if r["status"]] and time.time() < deadline:
+        browser.evaluate("1")                # lets the browser report the response
+        time.sleep(0.1)
+    assert [r["status"] for r in browser.api_requests("/cancel")] == [200]
 
 
 # ------------------------------------------------------- Phase 5: live sessions
@@ -684,3 +691,51 @@ def test_live_session_starts_and_stops_from_the_dashboard(browser, studio, tmp_p
                     and "400" not in c.get("text", "")] and browser.exceptions == []
     finally:
         writer.kill()
+
+
+# ------------------------------------------------- Phase 7: consent publishing
+
+def test_auto_publish_consent_dialog_requires_explicit_choices(browser, studio, tmp_path,
+                                                               monkeypatch):
+    import publish_consent
+    channel = {"id": "UC123", "title": "My Channel"}
+    monkeypatch.setattr(studio.app.youtube, "status",
+                        lambda: {"connected": True, "channel": channel, "scopes": []})
+    monkeypatch.setattr(publish_consent, "check_category",
+                        lambda client, cid, region: {"id": cid, "title": "Gaming",
+                                                     "region": region})
+    project_id, _ = _make_project(studio, tmp_path, clips=1)
+    open_studio(browser, studio)
+    browser.evaluate(f"selectProject({json.dumps(project_id)})")
+    browser.wait("document.querySelector('#autopublish-status').textContent.includes('Off')",
+                 timeout=15)
+    browser.evaluate("document.querySelector('#autopublish-open').click()")
+    browser.wait("document.querySelector('#consent-dialog').open", timeout=10)
+    form = "document.querySelector('#consent-form')"
+    assert browser.evaluate(f"[...{form}.querySelectorAll('[type=radio]')].some(r => r.checked)") \
+        is False, "nothing preselected"
+    browser.evaluate(f"{form}.elements.confirm.checked = true; {form}.elements.channel_id.value = 'UC123';"
+                     "document.querySelector('#consent-save').click()")
+    browser.wait("!document.querySelector('#consent-error').hidden", timeout=10)
+    assert "no default" in browser.evaluate("document.querySelector('#consent-error').textContent")
+    browser.evaluate(f"{form}.querySelector('[name=visibility][value=public]').click()")
+    assert browser.evaluate("document.querySelector('#consent-public').hidden") is False
+    browser.evaluate(f"{form}.querySelector('[name=visibility][value=unlisted]').click();"
+                     f"{form}.querySelector('[name=made_for_kids][value=no]').click();"
+                     f"{form}.elements.region_code.value = 'IN';"
+                     "document.querySelector('#consent-preview-go').click()")
+    browser.wait("document.querySelector('#consent-preview').textContent.includes('GTA 6')",
+                 timeout=10)
+    browser.evaluate("document.querySelector('#consent-save').click()")
+    browser.wait("document.querySelector('#autopublish-status').textContent.includes('UNLISTED')",
+                 timeout=10)
+    consent = studio.app.consents.active_for(project_id)
+    assert consent["visibility"] == "unlisted" and consent["made_for_kids"] is False
+    browser.evaluate("document.querySelector('#autopublish-open').click()")
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    browser.evaluate("document.querySelector('#app-dialog-ok').click()")
+    browser.wait("document.querySelector('#autopublish-status').textContent.includes('Off')",
+                 timeout=10)
+    assert studio.app.consents.active_for(project_id) is None
+    assert not [c for c in browser.console if c["level"] == "error"
+                and "400" not in c.get("text", "")] and browser.exceptions == []

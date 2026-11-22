@@ -168,3 +168,22 @@ def test_scheduler_settings_api_caps_renderers_at_two(tmp_path, bin_dir):
             studio.scheduler.configure({"pools": {"render": 5}})
     finally:
         studio.close()
+
+
+def test_exported_clips_are_offered_to_auto_publish_only_with_consent(tmp_path, bin_dir):
+    root = tmp_path / "projects"
+    studio = studio_at(root)
+    offered = []
+    studio.autopublish.offer = lambda pid, clip, values, score=None: (
+        offered.append((pid, clip.name)) or (None, "test"))
+    try:
+        pid = new_project(root, tmp_path, "vod", delay=0.2)
+        studio.enqueue(pid, "all")
+        assert studio.futures[pid].result(timeout=60) == "done"
+        assert offered == [], "no consent: nothing offered"
+        studio.consents.active_for = lambda project_id: {"id": "c1"} if project_id == pid else None
+        studio.enqueue(pid, "render")
+        assert studio.futures[pid].result(timeout=60) == "done"
+        assert offered == [(pid, "clip_01.mp4")]
+    finally:
+        studio.close()

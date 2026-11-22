@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 7: consent-based YouTube publishing
+- `publish_consent.py`: per-project (or live session) consent with an
+  explicitly chosen destination channel, visibility (no default; public
+  needs typing PUBLIC), made-for-kids declaration (never assumed), Gaming
+  category 20 checked as assignable for the user's region via
+  `videoCategories.list`, approved title/description templates, daily limit
+  and minimum score. `AutoPublisher` queues finished clips (live clips and
+  exported VOD clips) through the existing approval-gated upload queue;
+  refuses when the connected channel differs; revocation withdraws queued
+  uploads and keeps history. Finished uploads are verified with
+  `videos.list` after each upload run.
+- Studio: "Auto-publish…" consent dialog in the project view, turn-off
+  dialog, `/api/projects/<id>/consent|consent-preview|consent-revoke`.
+
 ### Phase 6: continuous live clipping
 - `live_clipper.py`: per-session detection of loud moments (robust
   median/MAD baseline, cooldown, hourly cap), ring pins for setup/payoff,

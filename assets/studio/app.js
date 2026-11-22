@@ -551,6 +551,7 @@ async function selectProject(id) {
   renderDetail();
   await refreshProjects();
   await loadYouTube();
+  await loadConsent().catch(() => {});
 }
 function updateStatus(detail) {
   const progress = detail.progress || {};
@@ -2640,5 +2641,98 @@ $("#live-sessions").addEventListener(
     await api(`/api/live/${stop.dataset.liveStop}/stop`, {});
     notice("Live session stopped.");
     await loadLive();
+  }),
+);
+
+// -------------------------------------------- consent-based publishing (Phase 7)
+async function loadConsent() {
+  if (!state.id) return null;
+  const data = await api(`/api/projects/${state.id}/consent`);
+  const c = data.consent;
+  $("#autopublish-status").textContent = c
+    ? `On: ${c.visibility.toUpperCase()} to ${c.channel_title || c.channel_id}, up to ${c.daily_limit}/day.`
+    : "Off: clips are uploaded only when you approve each one.";
+  $("#autopublish-open").textContent = c ? "Turn off auto-publish" : "Auto-publish…";
+  $("#autopublish-open").dataset.on = c ? "1" : "";
+  state.consent = data;
+  return data;
+}
+function consentChoices(form) {
+  const visibility = form.querySelector("[name=visibility]:checked")?.value;
+  const kids = form.querySelector("[name=made_for_kids]:checked")?.value;
+  return {
+    channel_id: form.elements.channel_id.value,
+    visibility,
+    public_confirmed: visibility === "public" && form.elements.public_word.value.trim() === "PUBLIC",
+    made_for_kids: kids === "yes" ? true : kids === "no" ? false : null,
+    region_code: form.elements.region_code.value.trim().toUpperCase(),
+    game: form.elements.game.value.trim(),
+    title_template: form.elements.title_template.value,
+    description_template: form.elements.description_template.value,
+    daily_limit: Number(form.elements.daily_limit.value),
+    min_score: Number(form.elements.min_score.value),
+    category_id: "20",
+    confirm: form.elements.confirm.checked,
+  };
+}
+$("#autopublish-open").addEventListener(
+  "click",
+  safe(async (event) => {
+    const data = state.consent || (await loadConsent());
+    if (event.currentTarget.dataset.on) {
+      const ok = await askDialog({
+        title: "Turn off auto-publish?",
+        body: "Clips queued by it that have not started uploading go back to draft. Videos already on YouTube are not changed.",
+        confirmText: "Turn off",
+        danger: true,
+      });
+      if (!ok) return;
+      const result = await api(`/api/projects/${state.id}/consent-revoke`, {});
+      notice(`Auto-publish turned off. ${result.withdrawn} queued upload(s) withdrawn.`);
+      return loadConsent();
+    }
+    if (!data.channel) throw new Error("Connect your YouTube channel first (Publish > Connect).");
+    const dialog = $("#consent-dialog");
+    const form = $("#consent-form");
+    form.elements.channel_id.innerHTML = `<option value="">Choose…</option><option value="${escapeHTML(data.channel.id)}">${escapeHTML(data.channel.title || data.channel.id)}</option>`;
+    form.querySelectorAll("[type=radio]").forEach((r) => (r.checked = false));
+    form.elements.confirm.checked = false;
+    form.elements.public_word.value = "";
+    $("#consent-public").hidden = true;
+    $("#consent-error").hidden = true;
+    $("#consent-preview").textContent = "";
+    $("#consent-note").textContent = data.note;
+    dialog.showModal();
+  }),
+);
+$("#consent-form").addEventListener("change", (event) => {
+  if (event.target.name === "visibility")
+    $("#consent-public").hidden = event.target.value !== "public";
+});
+$("#consent-form").addEventListener(
+  "submit",
+  safe(async (event) => {
+    const action = event.submitter?.value;
+    if (action === "cancel") return;
+    event.preventDefault();
+    const form = event.target;
+    const choices = consentChoices(form);
+    const error = $("#consent-error");
+    error.hidden = true;
+    try {
+      if (action === "preview") {
+        const p = await api(`/api/projects/${state.id}/consent-preview`, choices);
+        $("#consent-preview").textContent = `Example: "${p.title}" — ${p.description}`;
+        return;
+      }
+      await api(`/api/projects/${state.id}/consent`, choices);
+    } catch (problem) {
+      error.textContent = problem.message;
+      error.hidden = false;
+      return;
+    }
+    $("#consent-dialog").close("save");
+    notice(`Auto-publish is on (${choices.visibility}).`);
+    await loadConsent();
   }),
 );

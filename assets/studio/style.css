@@ -1787,3 +1787,12 @@ button.danger {
 .live-candidates [data-state="done"] {
   color: var(--accent);
 }
+
+.consent-dialog form {
+  display: grid;
+  gap: 8px;
+}
+.consent-dialog fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}

@@ -38,3 +38,11 @@ going, one accepted clip rendered for real (1080x1920, <=120 s, context
 before and after the moment, ready well under 5 min), one rejected, pins
 released, clip kept after stopping. Real Groq used only in Phase 9.
 992 passing.
+
+## Phase 7
+14 consent tests against a mocked YouTube API (explicit choices, category
+check per region, upload with chosen visibility/kids/category, verification
+via videos.list, duplicate prevention, score/daily-limit/channel checks,
+public confirmation, revocation), Studio hook test, consent browser test.
+No real uploads were made. A timing-sensitive cancel browser test now
+asserts the cancel request instead of a transient notice. 1008 passing.

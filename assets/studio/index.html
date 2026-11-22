@@ -593,6 +593,10 @@
                 <h2>Rendered clips</h2>
                 <span id="output-count">0 FILES</span>
               </div>
+              <div class="dash-inline">
+                <button id="autopublish-open" type="button">Auto-publish…</button>
+                <span id="autopublish-status" class="hint"></span>
+              </div>
               <div id="clip-tools" class="dash-inline clip-tools" hidden>
                 <button id="delete-selected-clips" type="button">Delete selected clips</button>
                 <button id="delete-all-clips" type="button">Delete all clips</button>
@@ -1201,6 +1205,44 @@
           <div class="dialog-actions">
             <button value="cancel" id="app-dialog-cancel" type="submit" formnovalidate>Cancel</button>
             <button value="ok" id="app-dialog-ok" type="submit">OK</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="consent-dialog" class="delete-dialog consent-dialog" aria-labelledby="consent-title">
+        <form method="dialog" id="consent-form">
+          <h2 id="consent-title">Publish this project's clips automatically?</h2>
+          <p class="hint">Chopify uploads finished clips from this project (or live session) with
+            the choices below, up to your daily limit. You can turn this off at any time.
+            <span id="consent-note"></span></p>
+          <label>Destination channel<select name="channel_id" required>
+              <option value="">Choose…</option></select></label>
+          <fieldset><legend>Visibility (no default)</legend>
+            <label class="check"><input type="radio" name="visibility" value="private" /> Private</label>
+            <label class="check"><input type="radio" name="visibility" value="unlisted" /> Unlisted</label>
+            <label class="check"><input type="radio" name="visibility" value="public" /> Public</label>
+          </fieldset>
+          <label id="consent-public" hidden>Type PUBLIC to allow public uploads<input
+              name="public_word" autocomplete="off" /></label>
+          <fieldset><legend>Made for kids? (legal declaration, required)</legend>
+            <label class="check"><input type="radio" name="made_for_kids" value="no" /> No, not made for kids</label>
+            <label class="check"><input type="radio" name="made_for_kids" value="yes" /> Yes, made for kids</label>
+          </fieldset>
+          <label>Region (two letters)<input name="region_code" maxlength="2" placeholder="IN" /></label>
+          <label>Game<input name="game" maxlength="60" placeholder="GTA 6" /></label>
+          <label>Title template<input name="title_template" maxlength="200"
+              value="{hook} | {game}" /></label>
+          <label>Description template<textarea name="description_template" rows="3">Clip from {stream} ({date}). #{game} #shorts</textarea></label>
+          <p class="hint">Placeholders: {title} {hook} {game} {stream} {date} {score}. Category: Gaming (20), checked for your region.</p>
+          <p id="consent-preview" class="hint"></p>
+          <label>Uploads per day<input name="daily_limit" type="number" min="1" max="20" value="3" /></label>
+          <label>Only clips scoring at least<input name="min_score" type="number" min="0" max="10" step="0.5" value="7" /></label>
+          <label class="check"><input type="checkbox" name="confirm" /> I allow Chopify to upload
+            this project's clips to the channel above with these settings.</label>
+          <p id="consent-error" class="error" role="alert" hidden></p>
+          <div class="dialog-actions">
+            <button value="cancel" type="submit" formnovalidate>Cancel</button>
+            <button value="preview" type="submit" id="consent-preview-go" formnovalidate>Preview</button>
+            <button value="save" type="submit" id="consent-save">Turn on auto-publish</button>
           </div>
         </form>
       </dialog>

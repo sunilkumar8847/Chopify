@@ -23,6 +23,7 @@ import features
 import live_clipper as live_clipper_mod
 import live_ingest
 import project_admin
+import publish_consent
 import scheduler as scheduler_mod
 import compliance
 import youtube_data
@@ -259,6 +260,10 @@ class Studio:
         # Phase 5: YouTube. Uploads run only for clips the user approved.
         self.youtube = youtube_auth.YouTubeAccount()
         self.uploads = youtube_upload.UploadQueue(self.youtube)
+        # Phase 7: consent-based automatic publishing.
+        self.consents = publish_consent.ConsentStore()
+        self.autopublish = publish_consent.AutoPublisher(
+            self.consents, self.uploads, lambda: (self.youtube.status() or {}).get("channel"))
         self.upload_timer = None
         self.storage_timer = None
         # Phase 6: automation settings, event history, channel monitoring.
@@ -315,7 +320,9 @@ class Studio:
         # Phase 6: continuous clipping of live sessions (needs the scheduler).
         self.live_clipper = None
         if self.scheduler is not None and features.enabled("live_clipping"):
-            self.live_clipper = live_clipper_mod.LiveClipper(self.scheduler)
+            self.live_clipper = live_clipper_mod.LiveClipper(
+                self.scheduler, on_clip=lambda pid, clip, item: self.offer_clip(
+                    pid, clip, (item or {}).get("score"), (item or {}).get("seg", {}).get("hook")))
             self.ai_jobs["live:segment"] = self.live_clipper.on_segment
             self.ai_jobs["live:judge"] = self.live_clipper.handle_judge
             self.ai_jobs["live:render"] = self.live_clipper.handle_render
@@ -380,7 +387,23 @@ class Studio:
             exc = RuntimeError(error)
             exc.retryable = False          # the same input fails the same way
             raise exc
+        if payload.get("action") == "render" and not payload.get("preview"):
+            self._offer_project_clips(project_id, path)
         return {"code": 0}
+
+    def _offer_project_clips(self, project_id, path):
+        """Exported clips go to auto-publish when the project has a consent."""
+        if self.consents.active_for(project_id) is None:
+            return
+        known = {e["file"] for e in self.uploads.entries()}
+        for clip in sorted((path / "clips").glob("*.mp4")):
+            if str(clip.resolve()) in known:
+                continue
+            try:
+                self.offer_clip(project_id, clip.resolve())
+            except (ValueError, OSError) as exc:
+                applog.warning("publish.auto", f"Auto-publish skipped {clip.name}: {exc}",
+                               project_id=project_id)
 
     def _task_ai(self, task, cancel, set_pid):
         payload = task["payload"] or {}
@@ -863,6 +886,14 @@ class Studio:
     def _run_uploads(self):
         try:
             self.uploads.process()
+            # Phase 7: confirm every finished upload with videos.list.
+            unverified = [e["id"] for e in self.uploads.entries()
+                          if e["state"] == "uploaded" and not e.get("verified_at")]
+            if unverified:
+                try:
+                    self.uploads.verify_uploaded(unverified)
+                except youtube_upload.UploadError as exc:
+                    applog.warning("upload.verify", f"Upload verification postponed: {exc}")
         finally:
             self._schedule_uploads()
             # A finished upload can make its project eligible once YouTube
@@ -889,6 +920,52 @@ class Studio:
                 "usage": self.uploads.usage(), "uploads": entries,
                 "categories": publish_meta.CATEGORIES,
                 "worker_busy": self.jobs.busy(self.UPLOAD_JOB, "upload")}
+
+    # ------------------------------------------------ Phase 7 auto-publishing
+    def offer_clip(self, project_id, clip, score=None, hook=None):
+        """A finished clip: queue it if an active consent covers this project."""
+        path = projects.project_path(self.root, project_id)
+        state = projects.read_project(path)
+        info = clip_info(path, Path(clip)) if Path(clip).with_suffix(".meta.json").exists() else {}
+        values = {"title": project_admin.display_title(state),
+                  "stream": project_admin.display_title(state),
+                  "hook": hook or info.get("hook") or "", "date": time.strftime("%d %b %Y"),
+                  "score": f"{score:.1f}" if isinstance(score, (int, float)) else ""}
+        entry, reason = self.autopublish.offer(project_id, clip, values, score)
+        if entry is not None and reason == "queued":
+            self.events.add("upload", f"Auto-publish queued {Path(clip).name} "
+                            f"({entry['metadata']['privacy']}).", project_id)
+            self.kick_uploads()
+        return entry, reason
+
+    def consent_state(self, project_id):
+        projects.project_path(self.root, project_id)
+        account = self.youtube.status()
+        return {"consent": self.consents.active_for(project_id),
+                "channel": account.get("channel") if account.get("connected") else None,
+                "placeholders": list(publish_consent.PLACEHOLDERS),
+                "categories": publish_meta.CATEGORIES, "note": publish_consent.AGE_NOTE,
+                "history": [c for c in self.consents.all() if c["project_id"] == project_id][-5:]}
+
+    def give_consent(self, project_id, choices):
+        projects.project_path(self.root, project_id)
+        account = self.youtube.status()
+        if not account.get("connected"):
+            raise ValueError("Connect your YouTube channel first (Publish > Connect).")
+
+        def category_check(category_id, region):
+            return publish_consent.check_category(self.youtube_data(), category_id, region)
+        consent = self.consents.create(project_id, choices, account.get("channel"),
+                                       category_check)
+        self.events.add("upload", f"Auto-publish turned on ({consent['visibility']}, up to "
+                        f"{consent['daily_limit']}/day).", project_id)
+        return self.consent_state(project_id)
+
+    def revoke_consent(self, project_id):
+        result = self.autopublish.revoke(project_id)
+        self.events.add("upload", f"Auto-publish turned off; {result['withdrawn']} queued "
+                        "upload(s) withdrawn.", project_id, level="warning")
+        return {**self.consent_state(project_id), "withdrawn": result["withdrawn"]}
 
     def publish_draft(self, project_id, clip_name, regenerate=False):
         """Upload entry (with AI metadata) for one exported clip. Uploads nothing."""
@@ -1381,6 +1458,8 @@ class Handler(BaseHTTPRequestHandler):
                 if project is not None:
                     projects.project_path(self.app.root, project)   # validates id
                 return self.send_json(self.app.youtube_state(project))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "consent":
+                return self.send_json(self.app.consent_state(parts[2]))
             if len(parts) == 3 and parts[:2] == ["api", "projects"]:
                 data = project_detail(self.app.root, parts[2])
                 data["busy"] = self.app.busy(parts[2])
@@ -1496,6 +1575,22 @@ class Handler(BaseHTTPRequestHandler):
                     project_id=parts[2], clips=len(files))
                 return self.send_json(self.app.delete_clips(
                     parts[2], files, confirm=confirm, confirmed=body.get("confirmed")))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in {
+                    "consent", "consent-revoke", "consent-preview"}:
+                project_id, action = parts[2], parts[3]
+                applog.info("publish.consent_request", f"{action} requested",
+                            project_id=project_id)
+                try:
+                    if action == "consent":
+                        return self.send_json(self.app.give_consent(project_id, body))
+                    if action == "consent-revoke":
+                        return self.send_json(self.app.revoke_consent(project_id))
+                    return self.send_json(self.app.autopublish.preview(body, {
+                        "title": "My stream", "stream": "My stream", "hook": "that clutch was insane",
+                        "game": body.get("game") or "GTA 6", "date": time.strftime("%d %b %Y"),
+                        "score": "8.5"}))
+                except publish_consent.ConsentError as exc:
+                    raise ValueError(str(exc)) from exc
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in {
                     "rename", "open-folder", "delete-plan", "delete"}:
                 project_id, action = parts[2], parts[3]

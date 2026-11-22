@@ -20,6 +20,7 @@ import applog
 import automation
 import envconfig
 import features
+import project_admin
 import scheduler as scheduler_mod
 import compliance
 import youtube_data
@@ -775,6 +776,30 @@ class Studio:
             applog.error("storage.cleanup", "Automatic cleanup check failed", exc=exc)
             self._schedule_storage()
 
+    # ------------------------------------------------ Phase 3 administration
+    def rename_project(self, project_id, title):
+        title = project_admin.validate_title(title)
+        path = projects.project_path(self.root, project_id)
+        projects.update_project(path, lambda s: s.update(title=title))
+        self.events.add("project", f"Renamed to \"{title}\".", project_id)
+        return {"id": project_id, "title": title}
+
+    def delete_plan(self, project_id):
+        return project_admin.delete_plan(self.root, project_id, self.uploads.entries(),
+                                         busy=self.busy(project_id))
+
+    def delete_project(self, project_id, mode, confirm=False, confirm_clips=None):
+        with self.lock:
+            path = projects.project_path(self.root, project_id)
+            title = project_admin.display_title(projects.read_project(path))
+            summary = project_admin.delete_project(
+                self.root, project_id, mode, self.uploads.entries(),
+                busy=self.busy(project_id), confirm=confirm, confirm_clips=confirm_clips,
+                title=title)
+        self.events.add("project", f"Project \"{title}\" deleted ({'including' if mode == 'everything' else 'keeping'} "
+                        f"final clips).", project_id, level="warning")
+        return summary
+
     def delete_clips(self, project_id, names, confirm=False, confirmed=None):
         with self.lock:
             if self.busy(project_id):
@@ -1288,7 +1313,9 @@ class Handler(BaseHTTPRequestHandler):
                 for item in items:
                     item["status_label"] = automation.status_label(
                         item, self.app.busy(item["id"]))
-                return self.send_json({"projects": items})
+                    item["display_title"] = project_admin.display_title(item)
+                return self.send_json({"projects": items, "scheduler": (
+                    self.app.scheduler.status() if self.app.scheduler is not None else None)})
             if parts == ["api", "overview"]:
                 return self.send_json(self.app.overview())
             if parts == ["api", "logs"]:
@@ -1315,6 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
                 data["recording_active"] = self.app.jobs.busy(parts[2], "record")
                 data["jobs"] = self.app.jobs.list(parts[2])[-10:]
                 data["status_label"] = automation.status_label(data["project"], data["busy"])
+                data["display_title"] = project_admin.display_title(data["project"])
                 data["clip_counts"] = automation.clip_counts(
                     projects.project_path(self.app.root, parts[2]), data["project"],
                     data["busy"], selected=len(data["candidates"] or []))
@@ -1410,6 +1438,22 @@ class Handler(BaseHTTPRequestHandler):
                     project_id=parts[2], clips=len(files))
                 return self.send_json(self.app.delete_clips(
                     parts[2], files, confirm=confirm, confirmed=body.get("confirmed")))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in {
+                    "rename", "open-folder", "delete-plan", "delete"}:
+                project_id, action = parts[2], parts[3]
+                applog.info("project.admin", f"Project {action} requested", project_id=project_id)
+                if action == "rename":
+                    return self.send_json(self.app.rename_project(project_id, body.get("title")))
+                if action == "open-folder":
+                    return self.send_json(project_admin.open_folder(self.app.root, project_id))
+                if action == "delete-plan":
+                    return self.send_json(self.app.delete_plan(project_id))
+                count = body.get("confirm_clips")
+                if count is not None and (isinstance(count, bool) or not isinstance(count, int)):
+                    raise ValueError("confirm_clips must be a number.")
+                return self.send_json(self.app.delete_project(
+                    project_id, body.get("mode"), confirm=body.get("confirm") is True,
+                    confirm_clips=count))
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "retry":
                 return self.send_json(self.app.retry(parts[2]))
             if parts[:2] == ["api", "youtube"] or parts[:2] == ["api", "uploads"] or (

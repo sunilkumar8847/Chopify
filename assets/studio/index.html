@@ -26,6 +26,7 @@
       <div class="rail-heading">
         YOUR PROJECTS <span id="project-count">0</span>
       </div>
+      <p id="source-slots" class="source-slots" aria-live="polite" hidden></p>
       <nav id="projects" aria-label="Saved projects">
         <p class="muted">No projects yet.</p>
       </nav>
@@ -416,6 +417,8 @@
           <div>
             <span class="eyebrow" id="project-id"></span>
             <h1 id="project-title">Project</h1>
+            <button type="button" id="project-actions" class="kebab" aria-haspopup="menu"
+              aria-label="Project actions">⋯</button>
             <p id="project-source" class="muted"></p>
           </div>
           <span id="status" class="status"></span>
@@ -1166,6 +1169,26 @@
           </div>
         </form>
       </dialog>
+      <dialog id="app-dialog" class="delete-dialog app-dialog" aria-labelledby="app-dialog-title">
+        <form method="dialog" id="app-dialog-form">
+          <h2 id="app-dialog-title"></h2>
+          <div id="app-dialog-body"></div>
+          <label id="app-dialog-field" class="app-dialog-field" hidden
+            ><span id="app-dialog-label"></span><input id="app-dialog-input" autocomplete="off"
+          /></label>
+          <p id="app-dialog-error" class="error" role="alert" hidden></p>
+          <div class="dialog-actions">
+            <button value="cancel" id="app-dialog-cancel" type="submit" formnovalidate>Cancel</button>
+            <button value="ok" id="app-dialog-ok" type="submit">OK</button>
+          </div>
+        </form>
+      </dialog>
+      <div id="project-menu" class="project-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-menu="rename">Rename</button>
+        <button type="button" role="menuitem" data-menu="open-folder">Open project folder</button>
+        <button type="button" role="menuitem" data-menu="storage">View storage</button>
+        <button type="button" role="menuitem" data-menu="delete" class="danger-text">Delete project…</button>
+      </div>
     </main>
   </body>
 </html>

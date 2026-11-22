@@ -33,6 +33,56 @@ const projectName = (source) =>
   /^https?:/.test(source)
     ? source.replace(/^https?:\/\//, "").slice(0, 65)
     : basename(source);
+// ----------------------------------------------------- dialogs (Phase 3)
+// One accessible modal for confirmations and simple questions; replaces the
+// browser's alert/confirm/prompt. Resolves to true / the typed text, or null.
+function askDialog({ title, body = "", html = "", confirmText = "OK", danger = false,
+  input = null, validate = null }) {
+  const dialog = $("#app-dialog");
+  $("#app-dialog-title").textContent = title;
+  const content = $("#app-dialog-body");
+  if (html) content.innerHTML = html;
+  else content.textContent = body;
+  const field = $("#app-dialog-field");
+  const box = $("#app-dialog-input");
+  field.hidden = !input;
+  if (input) {
+    $("#app-dialog-label").textContent = input.label;
+    box.type = input.type || "text";
+    box.value = input.value ?? "";
+    box.placeholder = input.placeholder || "";
+  }
+  const error = $("#app-dialog-error");
+  error.hidden = true;
+  const ok = $("#app-dialog-ok");
+  ok.textContent = confirmText;
+  ok.classList.toggle("danger", danger);
+  return new Promise((resolve) => {
+    const submit = (event) => {
+      if (event.submitter?.value !== "ok") return;
+      const value = input ? box.value.trim() : true;
+      const problem = validate ? validate(value) : "";
+      if (problem) {
+        event.preventDefault();
+        error.textContent = problem;
+        error.hidden = false;
+      }
+    };
+    dialog.querySelector("form").addEventListener("submit", submit);
+    dialog.addEventListener(
+      "close",
+      () => {
+        dialog.querySelector("form").removeEventListener("submit", submit);
+        resolve(dialog.returnValue === "ok" ? (input ? box.value.trim() : true) : null);
+      },
+      { once: true },
+    );
+    dialog.returnValue = "";
+    dialog.showModal();
+    (input ? box : ok).focus();
+  });
+}
+
 function notice(message, error = false) {
   clearTimeout(state.noticeTimer);
   const box = $("#notice");
@@ -464,11 +514,12 @@ function updateBrands(selected = "") {
 async function refreshProjects() {
   const result = await api("/api/projects");
   $("#project-count").textContent = result.projects.length;
+  renderSourceSlots(result.scheduler);
   const markup = result.projects.length
     ? result.projects
         .map(
           (p) =>
-            `<button class="project-item ${p.id === state.id ? "active" : ""}" data-id="${p.id}"><strong>${escapeHTML(projectName(p.source))}</strong><small>${escapeHTML(p.status_label || `${p.status} · ${p.stage}`)}</small></button>`,
+            `<div class="project-row"><button class="project-item ${p.id === state.id ? "active" : ""}" data-id="${p.id}" title="${escapeHTML(p.source || "")}"><strong>${escapeHTML(p.display_title || projectName(p.source))}</strong><small>${escapeHTML(p.status_label || `${p.status} · ${p.stage}`)}</small></button><button type="button" class="kebab" data-menu-for="${p.id}" aria-haspopup="menu" aria-label="Actions for ${escapeHTML(p.display_title || "project")}">⋯</button></div>`,
         )
         .join("")
     : '<p class="muted">Add a recording to begin.</p>';
@@ -793,7 +844,7 @@ function renderDetail() {
     p = detail.project,
     options = p.options;
   $("#project-id").textContent = `PROJECT / ${p.id}`;
-  $("#project-title").textContent = projectName(p.source);
+  $("#project-title").textContent = state.detail?.display_title || projectName(p.source);
   $("#project-source").textContent = p.source;
   const player = $("#source-player");
   const hint = $("#player-hint");
@@ -993,6 +1044,8 @@ $("#new-project").addEventListener("click", () => {
 $("#projects").addEventListener(
   "click",
   safe(async (event) => {
+    const menu = event.target.closest("[data-menu-for]");
+    if (menu) return openProjectMenu(menu.dataset.menuFor, menu);
     const button = event.target.closest("[data-id]");
     if (button) await selectProject(button.dataset.id);
   }),
@@ -1111,8 +1164,7 @@ $("#record-finalize").addEventListener(
 $("#cancel-job").addEventListener(
   "click",
   safe(async () => {
-    if (!confirm("Cancel this project's job? A recording is stopped and kept."))
-      return;
+    if (!(await askCancelJob())) return;
     await api(`/api/projects/${state.id}/cancel`, {});
     notice("Cancelling…");
   }),
@@ -1680,9 +1732,11 @@ $("#publish-approve").addEventListener(
   safe(async () => {
     const meta = metadataFromForm();
     const channel = state.youtube?.account?.channel?.title || "your channel";
-    const ok = window.confirm(
-      `Upload "${meta.title}" to ${channel} as ${meta.privacy.toUpperCase()}?\n\nThis sends the video to YouTube.`,
-    );
+    const ok = await askDialog({
+      title: `Upload to ${channel} as ${meta.privacy.toUpperCase()}?`,
+      body: `"${meta.title}" will be sent to YouTube with visibility ${meta.privacy}.`,
+      confirmText: "Upload",
+    });
     if (!ok) return;
     const entry = await api(`/api/uploads/${state.publishEntry.id}/approve`, {
       metadata: meta,
@@ -1728,7 +1782,9 @@ $("#yt-connect").addEventListener(
 $("#yt-disconnect").addEventListener(
   "click",
   safe(async () => {
-    if (!window.confirm("Disconnect YouTube? Chopify will revoke its access.")) return;
+    if (!(await askDialog({ title: "Disconnect YouTube?",
+      body: "Chopify will revoke its access. Upload history is kept.",
+      confirmText: "Disconnect", danger: true }))) return;
     await api("/api/youtube/disconnect", {});
     notice("YouTube disconnected.");
     await loadYouTube();
@@ -1933,14 +1989,16 @@ $("#dashboard-view").addEventListener(
     }
     const cancel = event.target.closest("[data-dash-cancel]");
     if (cancel) {
-      if (!confirm("Cancel this project's job? A recording is stopped and kept.")) return;
+      if (!(await askCancelJob())) return;
       await api(`/api/projects/${cancel.dataset.dashCancel}/cancel`, {});
       notice("Cancelling…");
       return loadOverview();
     }
     const remove = event.target.closest("[data-remove-channel]");
     if (remove) {
-      if (!confirm("Stop monitoring this channel?")) return;
+      if (!(await askDialog({ title: "Stop monitoring this channel?",
+        body: "Chopify stops checking it for new videos. Projects already made are kept.",
+        confirmText: "Stop monitoring", danger: true }))) return;
       await api(`/api/automation/channels/${remove.dataset.removeChannel}/remove`, {});
       return loadOverview();
     }
@@ -2390,3 +2448,141 @@ $("#ai-providers").addEventListener(
     }
   }),
 );
+
+// ------------------------------------------- project administration (Phase 3)
+async function askCancelJob() {
+  return askDialog({
+    title: "Cancel this project's job?",
+    body: "A recording is stopped and kept. Clips already made are kept.",
+    confirmText: "Cancel job",
+    danger: true,
+  });
+}
+function openProjectMenu(projectId, anchor) {
+  const menu = $("#project-menu");
+  state.menuProject = projectId;
+  const box = anchor.getBoundingClientRect();
+  menu.style.top = `${Math.round(box.bottom + window.scrollY + 4)}px`;
+  menu.style.left = `${Math.round(Math.max(8, Math.min(box.left, window.innerWidth - 230)))}px`;
+  menu.hidden = false;
+  menu.querySelector("button").focus();
+}
+function closeProjectMenu() {
+  $("#project-menu").hidden = true;
+}
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#project-menu, [data-menu-for], #project-actions"))
+    closeProjectMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeProjectMenu();
+});
+$("#project-actions").addEventListener("click", (event) => {
+  if (state.id) openProjectMenu(state.id, event.currentTarget);
+});
+function projectTitleFor(id) {
+  if (state.detail?.project?.id === id) return state.detail.display_title;
+  const row = document.querySelector(`#projects [data-id="${id}"] strong`);
+  return row ? row.textContent : "this project";
+}
+$("#project-menu").addEventListener(
+  "click",
+  safe(async (event) => {
+    const item = event.target.closest("[data-menu]");
+    if (!item) return;
+    const id = state.menuProject;
+    closeProjectMenu();
+    const action = item.dataset.menu;
+    if (action === "rename") {
+      const title = await askDialog({
+        title: "Rename project",
+        input: { label: "Project name", value: projectTitleFor(id) },
+        confirmText: "Rename",
+        validate: (v) => (!v ? "Enter a name." : v.length > 120 ? "Use at most 120 characters." : ""),
+      });
+      if (!title) return;
+      await api(`/api/projects/${id}/rename`, { title });
+      notice(`Renamed to "${title}".`);
+      state.projectMarkup = "";
+      await refreshProjects();
+      if (state.id === id) await selectProject(id);
+    } else if (action === "open-folder") {
+      const result = await api(`/api/projects/${id}/open-folder`, {});
+      notice(`Opened ${result.opened}`);
+    } else if (action === "storage") {
+      const plan = await api(`/api/storage/${id}/plan`);
+      const rows = Object.entries(plan.totals || {})
+        .filter(([, bytes]) => bytes > 0)
+        .map(([name, bytes]) => `<li>${escapeHTML(STORAGE_LABELS[name] || name)}: <strong>${formatSize(bytes)}</strong></li>`)
+        .join("");
+      await askDialog({
+        title: `Storage · ${projectTitleFor(id)}`,
+        html: `<p>Total ${formatSize(plan.total_bytes || 0)} on disk.</p><ul class="delete-list">${rows || "<li>No files.</li>"}</ul><p class="hint">Final clips are never deleted automatically. Supporting files can be cleaned up from Dashboard → Storage after the clips are uploaded.</p>`,
+        confirmText: "Close",
+      });
+    } else if (action === "delete") {
+      await deleteProjectFlow(id);
+    }
+  }),
+);
+const STORAGE_LABELS = {
+  final_clips: "Final clips",
+  kept_metadata: "Project metadata and history",
+  source_media: "Source media and downloads",
+  previews: "Previews",
+  transcripts_ai: "Transcripts, captions and AI caches",
+  temporary: "Temporary and intermediate files",
+};
+async function deleteProjectFlow(id) {
+  const plan = await api(`/api/projects/${id}/delete-plan`, {});
+  if (plan.blockers.length) throw new Error(plan.blockers.join(" "));
+  const clips = plan.final_clips.length;
+  const name = projectTitleFor(id);
+  const keep = await askDialog({
+    title: `Delete "${name}"?`,
+    html: `<p>This removes the project from Studio: source media, transcripts, previews and caches (${plan.other_files} file(s), ${formatSize(plan.other_bytes)}).</p>
+      <p><strong>Your ${clips} final clip(s) (${formatSize(plan.final_bytes)}) are kept</strong> in <code>${escapeHTML(plan.folder)}\\clips</code>. Upload history is kept.</p>
+      ${plan.links.length ? `<p class="hint">${plan.links.length} link(s) inside the folder are removed as links only; their targets are not touched.</p>` : ""}
+      ${clips ? `<p class="hint">To delete the final clips too, choose "Delete clips too".</p>` : ""}`,
+    confirmText: "Delete project, keep clips",
+    danger: true,
+  });
+  if (keep) {
+    const result = await api(`/api/projects/${id}/delete`, { mode: "project", confirm: true });
+    return afterDelete(id, `Project deleted. ${result.final_clips_kept} final clip(s) kept.`);
+  }
+  if (!clips) return notice("Nothing was deleted.");
+  const typed = await askDialog({
+    title: `Also delete ${clips} final clip(s)?`,
+    html: `<p class="error">This permanently deletes the finished MP4 files too. It cannot be undone. Videos already on YouTube are not changed.</p>`,
+    input: { label: `Type ${clips} to confirm`, placeholder: String(clips) },
+    confirmText: "Delete clips too",
+    danger: true,
+    validate: (v) => (v === String(clips) ? "" : `Type ${clips} to confirm.`),
+  });
+  if (!typed) return notice("Nothing was deleted.");
+  const result = await api(`/api/projects/${id}/delete`, {
+    mode: "everything", confirm: true, confirm_clips: Number(typed),
+  });
+  return afterDelete(id, `Project and ${clips} clip(s) deleted (${formatSize(result.bytes_freed)}).`);
+}
+async function afterDelete(id, message) {
+  notice(message);
+  state.projectMarkup = "";
+  if (state.id === id) {
+    state.id = null;
+    $("#project-view").hidden = true;
+    $("#new-project").click();
+  }
+  await refreshProjects();
+}
+function renderSourceSlots(info) {
+  const out = $("#source-slots");
+  if (!info) {
+    out.hidden = true;
+    return;
+  }
+  const s = info.settings;
+  out.hidden = false;
+  out.textContent = `Sources ${info.active}/${s.max_sources} active${info.waiting ? ` · ${info.waiting} waiting` : ""} · render ${info.stages.render.running}/${info.stages.render.slots}${info.paused_reason ? ` · paused: ${info.paused_reason}` : ""}`;
+}

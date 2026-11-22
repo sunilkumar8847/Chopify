@@ -99,6 +99,17 @@ in-memory "process" lane in Studio. State lives in `projects/.scheduler.db`
   (`{"pools": {"render": 2}}`). Turn the scheduler off with
   `CHOPIFY_FEATURE_SCHEDULER=0` to get the legacy one-at-a-time lane.
 
+## Upgrade Phase 3: project administration
+
+`project_admin.py` owns titles and deletion. Project rows show
+`display_title` (saved title, source metadata title, or a cleaned file
+name). Deleting a project removes its folder except `clips/*.mp4` and
+`.meta.json` (kept with `REMOVED_PROJECT.txt`) unless the user chooses to
+delete the clips too and types their count. The folder must be a real
+directory `<root>/<12-hex id>`; links inside are removed without entering
+them. API: `POST /api/projects/<id>/rename|open-folder|delete-plan|delete`.
+All confirmations use Studio's `#app-dialog`.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

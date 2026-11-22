@@ -1676,3 +1676,78 @@ button.danger {
 .ai-env code {
   word-break: break-all;
 }
+
+/* Phase 3: project rows, menus, dialogs */
+.project-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.project-row .project-item {
+  flex: 1;
+  min-width: 0;
+}
+.kebab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.kebab:hover,
+.kebab[aria-expanded="true"] {
+  border-color: var(--line);
+  color: var(--ink);
+}
+.project-menu {
+  position: absolute;
+  z-index: 50;
+  min-width: 210px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.project-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.project-menu button:hover,
+.project-menu button:focus-visible {
+  background: #273033;
+}
+.danger-text {
+  color: var(--danger) !important;
+}
+.app-dialog-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 0.75rem;
+}
+.app-dialog code {
+  word-break: break-all;
+}
+.source-slots {
+  margin: 0 12px 8px;
+  color: var(--muted);
+  font: 10px Consolas, monospace;
+  text-transform: uppercase;
+}
+.project-heading h1 + .kebab {
+  vertical-align: middle;
+}
+#project-title {
+  display: inline-block;
+  margin-right: 8px;
+}

@@ -32,7 +32,7 @@ def studio(tmp_path, monkeypatch):
     """Studio with a fast fake worker that walks through real stages."""
     behaviour = {"steps": [("source", 0.3), ("transcribe", 0.3)], "fail": None}
 
-    def fake_run(self, path, action, preview, pick):
+    def fake_run(self, path, action, preview, pick, on_child=None):
         for stage, seconds in behaviour["steps"]:
             projects.update_project(path, lambda s, st=stage: s.update(
                 status="running", stage=st,
@@ -528,17 +528,117 @@ def test_ai_settings_panel_keeps_keys_secret_and_free_only_default(browser, stud
     assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
 
 
-def test_no_new_native_dialogs():
-    """Phase 1 adds no alert/confirm/prompt. Three confirm() calls predate it
-    (cancel job x2, stop monitoring); Phase 3 replaces them with modals."""
+def test_no_native_dialogs_remain():
+    """Phase 3: every alert/confirm/prompt was replaced by Studio's own dialogs."""
     from pathlib import Path
     import re
     source = (Path(__file__).parent.parent / "assets" / "studio" / "app.js").read_text(
         encoding="utf-8")
-    calls = re.findall(r"(?<![\w.])(alert|confirm|prompt)\s*\(\s*\"([^\"]*)", source)
-    assert sorted(calls) == sorted([
-        ("confirm", "Cancel this project's job? A recording is stopped and kept."),
-        ("confirm", "Cancel this project's job? A recording is stopped and kept."),
-        ("confirm", "Stop monitoring this channel?")])
-    ai_part = source[source.index("// ------------------------------------------------------------------ AI"):]
-    assert not re.search(r"(?<![\w.])(alert|confirm|prompt)\s*\(", ai_part)
+    assert not re.search(r"(?<![\w])(?:window\.)?(alert|confirm|prompt)\s*\(", source)
+
+
+# ------------------------------------------- Phase 3: project administration
+
+def _make_project(studio, tmp_path, name="My_gameplay-session.mp4", clips=2):
+    video = tmp_path / name
+    video.write_bytes(b"\0" * 32)
+    state = projects.create_project(studio.app.root, str(video), {})
+    folder = projects.project_path(studio.app.root, state["id"])
+    (folder / "clips").mkdir()
+    for i in range(clips):
+        (folder / "clips" / f"clip_{i:02d}.mp4").write_bytes(b"final")
+    (folder / "transcript.json").write_text("{}", encoding="utf-8")
+    return state["id"], folder
+
+
+def _menu(browser, project_id, item):
+    browser.evaluate(f"document.querySelector('[data-menu-for=\"{project_id}\"]').click()")
+    browser.wait("!document.querySelector('#project-menu').hidden")
+    browser.evaluate(f"document.querySelector('#project-menu [data-menu=\"{item}\"]').click()")
+
+
+def _dialog_ok(browser, text=None):
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    if text is not None:
+        browser.evaluate(f"document.querySelector('#app-dialog-input').value = {json.dumps(text)}")
+    browser.evaluate("document.querySelector('#app-dialog-ok').click()")
+
+
+def test_project_titles_rename_and_menu(browser, studio, tmp_path, monkeypatch):
+    import project_admin
+    opened = []
+    monkeypatch.setattr(project_admin.os, "startfile", lambda p: opened.append(p), raising=False)
+    project_id, folder = _make_project(studio, tmp_path)
+    open_studio(browser, studio)
+    row = f"document.querySelector('#projects [data-id=\"{project_id}\"] strong').textContent"
+    browser.wait(f"{row} === 'My gameplay session'", timeout=10)
+    _menu(browser, project_id, "rename")
+    browser.wait("document.querySelector('#app-dialog').open")
+    assert browser.evaluate("document.querySelector('#app-dialog-input').value") == \
+        "My gameplay session"
+    _dialog_ok(browser, "")
+    browser.wait("!document.querySelector('#app-dialog-error').hidden")
+    assert browser.evaluate("document.querySelector('#app-dialog').open"), "empty name refused"
+    _dialog_ok(browser, "GTA night stream")
+    browser.wait(f"{row} === 'GTA night stream'", timeout=10)
+    assert projects.read_project(folder)["title"] == "GTA night stream"
+    _menu(browser, project_id, "open-folder")
+    browser.wait("document.querySelector('#notice').textContent.includes('Opened')", timeout=10)
+    assert opened == [str(folder.resolve())]
+    _menu(browser, project_id, "storage")
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    body = browser.evaluate("document.querySelector('#app-dialog-body').textContent")
+    assert "Final clips" in body and "Total" in body
+    browser.evaluate("document.querySelector('#app-dialog-ok').click()")
+    assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
+
+
+def test_delete_project_keeps_final_clips_by_default(browser, studio, tmp_path):
+    project_id, folder = _make_project(studio, tmp_path, clips=2)
+    open_studio(browser, studio)
+    browser.wait(f"document.querySelector('[data-menu-for=\"{project_id}\"]')", timeout=10)
+    _menu(browser, project_id, "delete")
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    assert "final clip(s)" in browser.evaluate("document.querySelector('#app-dialog-body').textContent")
+    _dialog_ok(browser)
+    browser.wait("document.querySelector('#notice').textContent.includes('2 final clip(s) kept')",
+                 timeout=10)
+    assert sorted(p.name for p in (folder / "clips").iterdir()) == ["clip_00.mp4", "clip_01.mp4"]
+    assert not (folder / "project.json").exists() and not (folder / "transcript.json").exists()
+    assert (folder / "REMOVED_PROJECT.txt").exists()
+    browser.wait(f"!document.querySelector('[data-id=\"{project_id}\"]')", timeout=10)
+
+
+def test_delete_everything_needs_the_typed_clip_count(browser, studio, tmp_path):
+    project_id, folder = _make_project(studio, tmp_path, clips=3)
+    open_studio(browser, studio)
+    browser.wait(f"document.querySelector('[data-menu-for=\"{project_id}\"]')", timeout=10)
+    _menu(browser, project_id, "delete")
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    browser.evaluate("document.querySelector('#app-dialog-cancel').click()")
+    browser.wait("document.querySelector('#app-dialog').open && "
+                 "document.querySelector('#app-dialog-title').textContent.includes('3 final clip')",
+                 timeout=10)
+    _dialog_ok(browser, "2")
+    browser.wait("!document.querySelector('#app-dialog-error').hidden")
+    assert (folder / "clips" / "clip_00.mp4").exists(), "wrong count deletes nothing"
+    _dialog_ok(browser, "3")
+    browser.wait("document.querySelector('#notice').textContent.includes('3 clip(s) deleted')",
+                 timeout=10)
+    assert not folder.exists()
+
+
+def test_cancel_job_uses_the_studio_dialog(browser, studio, tmp_path):
+    studio.behaviour["steps"] = [("source", 5)]
+    open_studio(browser, studio)
+    video = tmp_path / "long.mp4"
+    video.write_bytes(b"\0")
+    click_find_clips(browser, source=str(video))
+    browser.wait("!document.querySelector('#project-view').hidden", timeout=15)
+    browser.wait("!document.querySelector('#cancel-job').hidden", timeout=15)
+    browser.evaluate("document.querySelector('#cancel-job').click()")
+    browser.wait("document.querySelector('#app-dialog').open", timeout=10)
+    assert "Clips already made are kept" in browser.evaluate(
+        "document.querySelector('#app-dialog-body').textContent")
+    _dialog_ok(browser)
+    browser.wait("document.querySelector('#notice').textContent.includes('Cancelling')", timeout=10)

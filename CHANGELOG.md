@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 3: project administration and dialogs
+- Human-readable project titles (`project_admin.display_title`), rename,
+  three-dot project menu (rename, open folder, view storage, delete).
+- Safe project deletion: "delete project, keep final clips" (default) or
+  "delete clips too" with the clip count typed; refuses junction/symlink
+  project folders, removes links inside a project as links only, never
+  unlinks a file resolving outside the project, refuses busy projects and
+  pending uploads, keeps upload history.
+- Studio dialog (`askDialog`) replaces every native alert/confirm/prompt.
+- Sidebar shows scheduler source slots.
+
 ### Phase 2: five-source persistent scheduler
 - `scheduler.py`: SQLite queue with 5 source slots, waiting queue (live
   first), separate ingest/analysis/AI/render pools (render 1, max 2), GPU

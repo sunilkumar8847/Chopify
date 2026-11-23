@@ -52,6 +52,8 @@ PRE_CONTEXT = 30.0           # initial clip start before the peak
 POST_CONTEXT = 15.0          # initial clip end after the peak
 PIN_BEFORE = 75.0            # kept in the ring for setup
 PIN_AFTER = 45.0             # kept in the ring for payoff
+JUDGE_BEFORE = 45.0          # audio sent for transcription: setup ...
+JUDGE_AFTER = 20.0           # ... and payoff (small uploads on slow connections)
 MIN_SCORE = 6.5
 MAX_CLIPS_PER_HOUR = 30
 ASPECT = "9:16"
@@ -241,7 +243,8 @@ class LiveClipper:
                          "cooldown": COOLDOWN, "pre_context": PRE_CONTEXT,
                          "post_context": POST_CONTEXT, "min_score": MIN_SCORE,
                          "max_clips_per_hour": MAX_CLIPS_PER_HOUR, "pin_before": PIN_BEFORE,
-                         "pin_after": PIN_AFTER, **(settings or {})}
+                         "pin_after": PIN_AFTER, "judge_before": JUDGE_BEFORE,
+                         "judge_after": JUDGE_AFTER, **(settings or {})}
         self.clippers = {}
         self.sessions = {}
         self.transcribe = transcribe or self._transcribe
@@ -286,8 +289,8 @@ class LiveClipper:
         ring = clipper.session.ring
         work = clipper.path / "live" / "work"
         work.mkdir(parents=True, exist_ok=True)
-        lo = item["peak"] - self.settings["pin_before"]
-        hi = item["peak"] + self.settings["pin_after"]
+        lo = item["peak"] - min(self.settings["judge_before"], self.settings["pin_before"])
+        hi = item["peak"] + min(self.settings["judge_after"], self.settings["pin_after"])
         try:
             file, offset = ring.extract(max(0.0, lo), hi, work / f"{item['id']}-judge.ts")
         except Exception as exc:               # noqa: BLE001
@@ -356,8 +359,8 @@ class LiveClipper:
     # building blocks ---------------------------------------------------
     def _refine(self, item, words):
         seg = {"start": item["start"], "end": item["end"], "score": 7.0}
-        lo = item["peak"] - self.settings["pin_before"]
-        hi = item["peak"] + self.settings["pin_after"]
+        lo = item["peak"] - min(self.settings["judge_before"], self.settings["pin_before"])
+        hi = item["peak"] + min(self.settings["judge_after"], self.settings["pin_after"])
         sentences = score_clips.sentenceize(words)
         if sentences:
             refined, _ = boundaries.refine_segments(

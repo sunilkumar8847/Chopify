@@ -39,6 +39,7 @@ import publish_meta
 import storage
 import render_clips
 import youtube_auth
+import winjob
 import youtube_upload
 
 HERE = Path(__file__).resolve().parent
@@ -69,6 +70,8 @@ def project_detail(root, project_id):
             pass
     for directory in ("previews", "clips"):
         for file in sorted((path / directory).glob("*")):
+            if file.name.startswith("_"):           # render in progress / temporary
+                continue
             if file.suffix in {".mp4", ".srt", ".png", ".json"}:
                 data["files"].append({"name": file.name, "kind": directory,
                                       "url": f"/media/{project_id}/{directory}/{file.name}"})
@@ -398,7 +401,7 @@ class Studio:
             return
         known = {e["file"] for e in self.uploads.entries()}
         for clip in sorted((path / "clips").glob("*.mp4")):
-            if str(clip.resolve()) in known:
+            if clip.name.startswith("_") or str(clip.resolve()) in known:
                 continue
             try:
                 self.offer_clip(project_id, clip.resolve())
@@ -586,7 +589,8 @@ class Studio:
                 "pipeline": automation.pipeline(path, state, project_uploads),
                 "progress": automation.progress(state),
                 "diagnosis": automation.diagnose(state, log_tail),
-                "clips": len(list((path / "clips").glob("*.mp4"))) if (path / "clips").is_dir() else 0,
+                "clips": len([c for c in (path / "clips").glob("*.mp4") if not c.name.startswith("_")])
+                if (path / "clips").is_dir() else 0,
                 "legacy_captions": len(projects.legacy_caption_clips(path)),
                 "uploads": {s: sum(1 for u in project_uploads if u["state"] == s)
                             for s in {u["state"] for u in project_uploads}},
@@ -1214,6 +1218,7 @@ class Studio:
                         return
                     child = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.DEVNULL,
                                              stdout=log, stderr=subprocess.STDOUT, env=env)
+                    winjob.attach(child)     # dies with Studio, even if Studio is killed
                     self.processes.add(child)
                     self.children[path.name] = child
                 if on_child:

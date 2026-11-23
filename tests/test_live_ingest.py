@@ -238,3 +238,13 @@ def test_studio_restart_resumes_active_sessions(tmp_path):
             again.stop(pid)
     segs = again.sessions[pid].ring.live_segments()
     assert [s["seq"] for s in segs] == sorted({s["seq"] for s in segs}), "no duplicates"
+
+
+def test_partial_segments_left_by_a_crash_are_removed(ts_segments):
+    ring = ts_segments
+    (ring.segments / "seg00000010.ts").write_bytes(b"half written")
+    (ring.segments / "notes.txt").write_text("not a segment")
+    assert ring.drop_unindexed() == 1
+    assert not (ring.segments / "seg00000010.ts").exists()
+    assert (ring.segments / "seg00000009.ts").exists(), "indexed segments untouched"
+    assert (ring.segments / "notes.txt").exists()

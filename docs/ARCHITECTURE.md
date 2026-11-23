@@ -170,6 +170,30 @@ and link page: nothing is monitored per channel, nothing is combined across
 channels, nothing is downloaded. `GET /api/discover?q=&live=&order=&region=`,
 `/api/discover/popular`, `/api/discover/watch`, `POST /api/discover/add|remove`.
 
+## Upgrade Phase 9: resilience and test harnesses
+
+* **Process lifetime** (`winjob.py`): every worker (`chopify.py`) and live
+  ffmpeg Studio starts joins a Windows Job Object with kill-on-close, so if
+  Studio is killed its children end with it. The scheduler's restart
+  recovery (leases + leftover stop) remains as the second line.
+* **Machine-wide AI slots** (`ai/slots.py`): at most
+  `max_concurrent_requests` (default 2) requests per provider run on this
+  computer at once, across Studio and all workers, using OS file locks that
+  are released automatically if a process dies. On a slow uplink this keeps
+  uploads from starving each other; waiting for a slot respects cancel and
+  becomes a temporary (retryable) error after the timeout.
+* **Live judging upload size**: only peak-45 s .. peak+20 s is transcribed
+  for a candidate (the ring still pins 75 s / 45 s of context for the clip).
+* **Partial live segments**: a segment ffmpeg was writing when it was
+  stopped or killed is deleted at the next session start/stop.
+* **Simulated AI** (`ai/providers/simulated.py`): registered only when
+  `CHOPIFY_AI_SIMULATE=1`; deterministic, free, never leaves the computer.
+  Used by the stress harness so load tests do not depend on the network.
+* **Harnesses** (`tools/`): `harness.py` (isolated run folders, sleep
+  prevention and detection, run-scoped process checks, proof that the real
+  projects folder is unchanged), `recovery_test.py`, `stress.py`,
+  `groq_check.py`.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

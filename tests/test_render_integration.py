@@ -221,3 +221,30 @@ def test_facecam_layout_exports_a_true_9_16_frame(tmp_path, monkeypatch):
         if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
     assert video.get("sample_aspect_ratio") in ("1:1", None), video.get("sample_aspect_ratio")
+
+
+def test_interrupted_render_never_leaves_a_final_looking_clip(source, tmp_path, monkeypatch):
+    """The encode writes "_partial-<name>"; only a verified file gets the real name."""
+    out_dir = tmp_path / "clips"
+    out_dir.mkdir()
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0}]
+    seg = {"id": "001", "start": 0.5, "end": 2.5, "hook": "kept hook"}
+    real_run = subprocess.run
+    encoded = []
+
+    def crash_during_encode(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ffmpeg" and "-filter_complex" in cmd:
+            encoded.append(Path(cmd[-1]).name)
+            Path(out_dir / Path(cmd[-1]).name).write_bytes(b"half an mp4")
+            raise KeyboardInterrupt("Studio killed mid-encode")
+        return real_run(cmd, *args, **kwargs)
+    monkeypatch.setattr(render_clips.subprocess, "run", crash_during_encode)
+    with pytest.raises(KeyboardInterrupt):
+        render_clips.render(seg, words, source, 640, 360, tmp_path, "9:16", out_dir=out_dir)
+    assert encoded and encoded[0].startswith("_partial-")
+    assert [p.name for p in out_dir.glob("*.mp4") if not p.name.startswith("_")] == []
+    monkeypatch.setattr(render_clips.subprocess, "run", real_run)
+    out = render_clips.render(seg, words, source, 640, 360, tmp_path, "9:16", out_dir=out_dir)
+    assert out.name == encoded[0].removeprefix("_partial-") and out.exists()
+    assert not list(out_dir.glob("_partial-*")), "the retry replaced the partial file"
+    assert out.with_suffix(".srt").exists() and out.with_suffix(".meta.json").exists()

@@ -53,6 +53,7 @@ DEFAULTS = {
     "max_retries": 3,
     "timeout_seconds": 120,
     "max_rate_limit_wait_seconds": 60,
+    "max_concurrent_requests": 2,     # per provider, across all Chopify processes
     "routes": {
         TRANSCRIBE: {"provider": "local", "model": "medium"},
         GENERATE: {"provider": "local", "model": "qwen2.5:3b"},
@@ -199,7 +200,8 @@ def validate(s, registry):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10000:
             raise ValueError(f"{name} must be between 0 and 10000.")
     for name, low, high in (("max_retries", 0, 6), ("timeout_seconds", 5, 900),
-                            ("max_rate_limit_wait_seconds", 0, 600)):
+                            ("max_rate_limit_wait_seconds", 0, 600),
+                            ("max_concurrent_requests", 1, 4)):
         value = s.get(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
             raise ValueError(f"{name} must be between {low} and {high}.")

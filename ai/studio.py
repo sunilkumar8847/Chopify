@@ -49,7 +49,7 @@ def overview(gw=None):
             "name": name, "title": cls.title, "role": ROLE.get(name, ""),
             "enabled": bool(conf.get("enabled")), "settings": conf,
             "key": ({"configured": True, "source": "not needed", "last4": None}
-                    if name == "local" else secrets.status(name)),
+                    if not cls.needs_key else secrets.status(name)),
             "privacy": _privacy(name, conf), "terms_url": cls.terms_url,
             "models": _models(name, conf), "health": health.get(name),
             "rate_limits": gw.limits.get(name), "last_limited": limited.get(name)})

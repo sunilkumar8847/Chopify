@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 import applog
 import compliance
 import projects
+import winjob
 
 SEGMENT_SECONDS = 6
 MAX_SESSIONS = 5
@@ -150,6 +151,23 @@ class Ring:
                 db.execute("UPDATE segments SET deleted = 1 WHERE seq = ?", (seg["seq"],))
             removed += 1
         return removed, freed
+
+    def drop_unindexed(self):
+        """Delete segment files newer than the last indexed one: ffmpeg was
+        stopped or killed while writing them, so they are incomplete (a
+        restarted session would overwrite them anyway)."""
+        last = self.last()
+        newest = last["seq"] if last else -1
+        removed = 0
+        for file in self.segments.glob("seg*.ts"):
+            match = re.search(r"(\d+)\.ts$", file.name)
+            if match and int(match.group(1)) > newest:
+                try:
+                    file.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
 
     def stats(self):
         segs = self.live_segments()
@@ -313,10 +331,12 @@ class Session:
         quit_ffmpeg(self.child)
         if self.thread is not None:
             self.thread.join(timeout)
+        self.ring.drop_unindexed()
         self._save(state="stopped", stopped=self.clock(), message="Stopped.")
 
     def _supervise(self):
         backoff = 1.0
+        self.ring.drop_unindexed()          # a partial segment from a crash
         self._save(state="active", message="Connecting…")
         while not self.stop_event.is_set():
             if self.info["kind"] == "obs_folder" and not self._pick_obs_file():
@@ -334,6 +354,7 @@ class Session:
                 self.child = subprocess.Popen(self._command(list_file, start_number),
                                               stdin=subprocess.PIPE,
                                               stdout=subprocess.DEVNULL, stderr=log)
+                winjob.attach(self.child)        # ends with Studio, even after a crash
             except OSError as exc:
                 log.close()
                 self._save(state="failed", message=f"Could not start ffmpeg: {exc}")

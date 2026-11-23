@@ -17,6 +17,7 @@ WHISPER_SIZES = ("tiny", "base", "small", "medium", "large-v3")
 class LocalProvider(Provider):
     name = "local"
     title = "Local (this computer)"
+    needs_key = False
 
     @classmethod
     def catalogue_supports(cls, capability, model_id):

@@ -156,6 +156,7 @@ class Provider:
     name = "base"
     title = "Provider"
     key_env = None
+    needs_key = True             # False: local or simulated, no API key
     # Privacy rules come from the provider's own terms (see docs/AI.md):
     # "real" data is only sent when real_media_allowed() says so.
     terms_url = ""

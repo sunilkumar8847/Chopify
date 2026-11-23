@@ -5,8 +5,12 @@ from ai.providers.local import LocalProvider
 from ai.providers.nvidia import NvidiaProvider
 from ai.providers.openrouter import OpenRouterProvider
 
+from ai.providers import simulated
+
 REGISTRY = {cls.name: cls for cls in (LocalProvider, GroqProvider, OpenRouterProvider,
                                       GeminiProvider, NvidiaProvider)}
+if simulated.enabled():                 # load/recovery tests only (CHOPIFY_AI_SIMULATE=1)
+    REGISTRY["simulated"] = simulated.SimulatedProvider
 
 # What each provider is approved for (shown in Studio).
 ROLE = {"local": "Your computer: private, no API cost; needs Ollama / Whisper models.",
@@ -15,4 +19,5 @@ ROLE = {"local": "Your computer: private, no API cost; needs Ollama / Whisper mo
         "openrouter": "Alternative text/vision models, always with zdr + data_collection: deny "
                       "and no provider fallback.",
         "gemini": "Evaluation. Free tier: synthetic test data only. Paid: needs your approval.",
-        "nvidia": "Trial: internal evaluation with synthetic data only (trial terms)."}
+        "nvidia": "Trial: internal evaluation with synthetic data only (trial terms).",
+        "simulated": "Test harness only: deterministic fake AI, nothing leaves this computer."}

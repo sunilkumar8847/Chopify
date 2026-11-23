@@ -1090,6 +1090,8 @@ def test_render_seeks_inside_section_with_global_caption_times(tmp_path, monkeyp
 
     def fake_run(cmd, **kwargs):
         commands.append([str(c) for c in cmd])
+        if cmd and cmd[0] == "ffmpeg":
+            Path(str(cmd[-1])).write_bytes(b"encoded")   # ffmpeg writes its output file
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(render_clips.subprocess, "run", fake_run)

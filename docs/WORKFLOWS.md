@@ -1,7 +1,88 @@
 # Chopify workflow guide
 
-Chopify processes local recordings or supported video URLs into short, captioned
-clips. All transcription, scoring, editing, and rendering run on your computer.
+Chopify turns your own recordings and live sessions into short, captioned
+clips. Editing and rendering run on your computer; transcription and AI judging
+use the AI route you choose (local models, or Groq Free by default for new
+projects; see docs/AI.md). YouTube links can be looked up for public metadata
+only: downloading or recording YouTube video is disabled pending YouTube's
+written approval (docs/COMPLIANCE.md).
+
+## Start Studio (Windows 11)
+
+```powershell
+cd D:\Clipping\Chopify\chopify
+.venv\Scripts\python dashboard.py
+```
+
+Studio opens at http://127.0.0.1:8765. Stop it with Ctrl+C. API keys and
+spending limits are read from `.env` at start (restart Studio after editing).
+
+## Projects: rename, open folder, storage, delete
+
+Each project in the left list has a ⋯ menu (also next to the project title):
+Rename, Open project folder, View storage, Delete project. Deleting keeps the
+final clips by default; deleting the clips too needs their number typed.
+Busy projects and projects with pending uploads cannot be deleted.
+
+## Up to five sources at once
+
+Five sources (live sessions and recorded videos together) run at the same
+time. A sixth video waits in a queue and starts when a slot frees; a sixth
+live session is refused, because a live stream cannot wait. Only one clip
+renders at a time (Dashboard setting: up to two). If Studio stops, queued and
+interrupted work continues by itself after the next start.
+
+## Live sessions from OBS
+
+1. In OBS: Settings > Output > Recording: format **MKV** (or FLV/TS or
+   fragmented MP4 - not plain MP4), a folder of your choice, keyframe interval
+   2 s if you can.
+2. Start recording in OBS.
+3. Studio > Dashboard > Live sessions: type "OBS output folder", the folder,
+   a name, **Start live session**. Repeat for up to five OBS instances (each
+   with its own folder).
+4. SRT instead: in OBS use a Custom output to `srt://<this PC>:9000`, and in
+   Studio type SRT with `srt://0.0.0.0:9000?mode=listener`.
+
+Studio keeps the last 30 minutes of each session in a rolling buffer and
+keeps any moment marked as a possible clip until its clip is made.
+
+## Automatic live clipping
+
+While a session runs, Chopify listens for loud moments (shouting, big
+reactions) against that stream's normal level. For each one it keeps about
+75 s before and 45 s after, then - once the payoff has been recorded - sends
+about a minute of audio to the transcription route, fits the clip to whole
+sentences (15-120 s, Shorts limit 120 s), asks the AI judge for a score and
+renders kept moments as 9:16 Shorts into the session's `clips` folder. The
+Live sessions panel shows every candidate and its state. If the AI provider
+is rate-limited, candidates wait ("ai waiting") and are retried; recording
+never stops for AI and nothing switches to a paid service.
+
+Scene labels (gameplay, starting soon, BRB, ...) are shown but never used to
+drop footage: that stays off until it has been measured on real labelled
+gaming recordings.
+
+## Automatic publishing (consent)
+
+Nothing is uploaded unless you allow it. In a project, **Auto-publish…**
+asks for: the destination channel, visibility (private / unlisted / public -
+no default; public needs typing PUBLIC), whether the videos are made for
+kids, your region (Gaming category is checked for it), title and description
+templates (with Preview), uploads per day and a minimum AI score. Tick the
+consent box to turn it on. Finished clips of that project (or live session)
+are then queued with those settings and checked on YouTube after upload.
+**Turn off auto-publish** withdraws anything not yet uploading. YouTube
+decides age restrictions and made-for-kids reviews.
+
+## Gaming discovery
+
+Dashboard > Discover gaming videos: type a game (for example GTA 6), tick
+"Live now" if you want live streams, choose the order and your region, and
+**Search YouTube** - or **Popular gaming** for YouTube's chart. Results come
+from the official YouTube Data API and open on YouTube. **Add to list** only
+saves the link; Chopify never downloads YouTube videos. About 100 searches a
+day are available (YouTube's search quota).
 
 ## Review a video in Studio
 

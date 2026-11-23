@@ -13,6 +13,7 @@ Fallback: only to local models, only when the user turned local fallback on,
 and only for outages (temporary errors, rate limits, quota). There is no
 automatic switch to another cloud provider and never to a paid one.
 """
+import contextlib
 import functools
 import random
 import threading
@@ -63,7 +64,7 @@ class Gateway:
         if name not in REGISTRY:
             raise policy.PolicyBlocked(f"Unknown AI provider '{name}'.")
         conf = dict((settings.get("providers") or {}).get(name) or {})
-        adapter = REGISTRY[name](conf, None if name == "local" else self.keys(name),
+        adapter = REGISTRY[name](conf, None if not REGISTRY[name].needs_key else self.keys(name),
                                  self.http, self.clock)
         adapter.send = functools.partial(self._send, adapter, settings)
         return adapter
@@ -120,7 +121,7 @@ class Gateway:
             settings = self.settings()
             name, model = self.route(capability, route, settings)
             adapter = self.adapter(name, settings)
-            if name != "local" and not adapter.key:
+            if adapter.needs_key and not adapter.key:
                 return False, f"No API key is configured for {adapter.title}."
             policy.check(settings, adapter, capability, model, data_kind,
                          adapter.estimate_cost(capability, model, input_tokens=2000,
@@ -133,7 +134,7 @@ class Gateway:
 
     def health(self, name):
         adapter = self.adapter(name)
-        if name != "local" and not adapter.key:
+        if adapter.needs_key and not adapter.key:
             result = {"ok": False, "detail": "No API key configured."}
         else:
             try:
@@ -153,7 +154,7 @@ class Gateway:
         rid = request_id()
         adapter = self.adapter(name, settings)
         try:
-            if name != "local" and not adapter.key:
+            if adapter.needs_key and not adapter.key:
                 raise AuthFailed(f"No API key is configured for {adapter.title}.", name)
             estimate = adapter.estimate_cost(capability, model, **sizes) \
                 if adapter.supports(capability, model) else None
@@ -206,7 +207,7 @@ class Gateway:
             if self.cancelled.is_set():
                 raise Cancelled("The AI request was cancelled.", adapter.name)
             try:
-                with self.slots[adapter.name]:
+                with self.slots[adapter.name], self._machine_slot(adapter, settings):
                     response = aihttp.request(adapter.name, method, url, headers, body,
                                               timeout, http=self.http)
                 self._note_limits(adapter, response[1])
@@ -227,6 +228,17 @@ class Gateway:
                     raise
                 self.clock.sleep(min(30.0, 2 ** attempt + random.random()))
         raise last
+
+    def _machine_slot(self, adapter, settings):
+        """One of N request slots per provider for the whole computer (all of
+        Studio's processes share the upload link). Tests with a fake HTTP
+        client skip it."""
+        if self.http is not None:
+            return contextlib.nullcontext()
+        from ai import slots
+        return slots.slot(adapter.name, settings.get("max_concurrent_requests", 2),
+                          wait=float(settings.get("timeout_seconds", 120)) * 5,
+                          cancelled=self.cancelled)
 
     def _note_limits(self, adapter, headers):
         """Respect the account's live limits: pause before a limit is hit."""

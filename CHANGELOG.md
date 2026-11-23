@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 9: integration, resilience and performance testing
+- `winjob.py`: Studio's workers and live ffmpeg processes join a Windows Job
+  Object (kill-on-close); killing Studio no longer leaves workers running.
+- `ai/slots.py`: machine-wide limit of 2 concurrent requests per AI provider
+  across Studio and all workers (OS file locks, released if a process dies);
+  `max_concurrent_requests` setting (1-4).
+- Renders encode to `_partial-<name>` and are renamed only after
+  verification, so an interrupted render never looks like a finished clip;
+  Studio lists ignore `_` files.
+- Live judging transcribes peak-45 s..peak+20 s (smaller uploads); partial
+  live segments left by a stop/crash are deleted.
+- `ai/providers/simulated.py` (only with `CHOPIFY_AI_SIMULATE=1`) for load
+  tests; harnesses `tools/stress.py`, `tools/recovery_test.py`,
+  `tools/groq_check.py`, `tools/startup_check.py`, `tools/harness.py`.
+- docs/WORKFLOWS.md: user guide for startup, project menu, five sources,
+  OBS/SRT live sessions, live clipping, auto-publish and discovery.
+
 ### Phase 8: YouTube gaming discovery (official Data API)
 - `discovery.py`: game/keyword search (`search.list`, Gaming category,
   optional live-only, user-chosen order), YouTube's most-popular Gaming

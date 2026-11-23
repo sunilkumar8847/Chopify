@@ -969,6 +969,16 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     suffix = ".preview" if preview else ""
     prefix = sanitize(str(seg["id"])) + "-" if seg.get("id") else ""
     out = out_dir / (prefix + sanitize(seg.get("hook", "clip")) + suffix + ".mp4")
+    # Encode under a temporary name and move it into place only after it is
+    # verified: a render interrupted by a crash or a kill never leaves a
+    # broken file that looks like a finished clip ("_" files are not final
+    # clips for storage, uploads or Studio).
+    final_out = out
+    out = out_dir / ("_partial-" + final_out.name)
+    try:
+        out.unlink()
+    except OSError:
+        pass
     inputs = ["-ss", f"{local_start:.3f}", "-i", str(render_src)]
     if brand and brand.get("logo"):
         width = max(20, round(brand["logo_width"] * tw / 1920))
@@ -1025,6 +1035,11 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     check = verify_output(out, tw, th, dur, expect_audio=has_audio)
     if check["ok"] is False:
         raise ValueError(f"Rendered clip failed its check: {'; '.join(check['problems'])}")
+    os.replace(out, final_out)
+    partial_srt = out.with_suffix(".srt")
+    if partial_srt.exists():
+        os.replace(partial_srt, final_out.with_suffix(".srt"))
+    out = final_out
 
     if preview:
         # drafts skip the poster and metadata - they exist to be eyeballed fast

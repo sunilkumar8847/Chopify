@@ -25,6 +25,7 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+import ytdlp
 
 SUBTITLE_VERSION = 1
 FILE_PREFIX = "captions"
@@ -99,14 +100,12 @@ def choose_track(tracks):
 
 def fetch(url, workdir, key, kind, runner=None):
     """Download one caption track as json3 (VTT/SRT accepted as fallback)."""
-    import compliance
-    compliance.require(url, "caption download")
     workdir = Path(workdir)
     for old in workdir.glob(f"{FILE_PREFIX}.*"):
         if old.suffix in {".json3", ".vtt", ".srt"}:
             old.unlink(missing_ok=True)
     flag = "--write-subs" if kind == "manual" else "--write-auto-subs"
-    cmd = [sys.executable, "-m", "yt_dlp", "--skip-download", "--no-playlist",
+    cmd = [*ytdlp.base(), "--skip-download", "--no-playlist",
            flag, "--sub-langs", key, "--sub-format", "json3/vtt/srt",
            "-o", str(workdir / f"{FILE_PREFIX}.%(ext)s"), url]
     run = runner or (lambda c: subprocess.run(c, check=True, capture_output=True,

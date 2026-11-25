@@ -56,7 +56,6 @@ def ts_segments(tmp_path):
 # ------------------------------------------------------------- validation
 
 @pytest.mark.parametrize("kind, source", [
-    ("url", "https://www.youtube.com/watch?v=abcdefghijk"),
     ("srt", "https://example.com/feed"),
     ("url", "ftp://example.com/x"),
     ("url", "file:///C:/x.mp4"),
@@ -69,9 +68,12 @@ def test_only_authorized_direct_sources_are_accepted(kind, source):
     assert compliance.is_youtube("https://youtu.be/x")
 
 
-def test_youtube_live_urls_are_refused_with_the_compliance_message():
-    with pytest.raises(LiveError, match="written approval"):
+def test_youtube_links_that_are_not_live_are_refused(monkeypatch):
+    monkeypatch.setattr(live_ingest, "youtube_live_status", lambda url: "was_live")
+    with pytest.raises(LiveError, match="not live right now"):
         live_ingest.validate_source("url", "https://youtube.com/live/abc")
+    monkeypatch.setattr(live_ingest, "youtube_live_status", lambda url: "is_live")
+    assert live_ingest.validate_source("url", "https://youtube.com/live/abc")
 
 
 # ------------------------------------------------------------------- ring

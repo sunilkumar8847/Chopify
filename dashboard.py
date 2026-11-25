@@ -139,12 +139,10 @@ def clip_info(path, clip):
 
 
 def youtube_metadata(source, client):
-    """Check source for a YouTube URL: official videos.list only.
-
-    Never downloads anything and never falls back to yt-dlp or scraping.
-    """
+    """Check source for a YouTube URL through the official videos.list (used when
+    yt-dlp cannot read the link)."""
     video_id = automation.youtube_id(source)
-    base = {"source": source, "kind": "youtube", "blocked": not compliance.youtube_downloads_allowed(),
+    base = {"source": source, "kind": "youtube", "blocked": False,
             "can_record": False, "probe_error": None, "metadata_source": "youtube_data_api",
             "title": None, "duration": None, "live_status": None, "release_timestamp": None}
     if not video_id:
@@ -173,11 +171,7 @@ def youtube_metadata(source, client):
         bits.append(f"{info['view_count']:,} views")
     label = {"is_live": "Live now on YouTube", "is_upcoming": "Upcoming YouTube stream",
              "was_live": "Finished YouTube live stream"}.get(info["live_status"], "YouTube video")
-    note = (" This is public metadata from the official Data API only. Downloading or "
-            "recording YouTube audiovisual content is disabled pending written approval, "
-            "so Find clips cannot use this link. To clip your own video, download it from "
-            "YouTube Studio and add the file, or use your OBS recording.") \
-        if base["blocked"] else ""
+    note = ""
     return {**base, "label": label, "title": info["title"],
             "channel": info["channel_title"], "channel_id": info["channel_id"],
             "duration": info["duration"], "live_status": info["live_status"],
@@ -192,15 +186,17 @@ def detect_source(source, youtube=None):
     source = source.strip()
     if not ingest.is_url(source) and not Path(source).expanduser().is_file():
         raise ValueError(f"Video file does not exist or URL is invalid: {source}")
-    if compliance.blocked(source):
-        # Downloads are off (the default): official API metadata only.
-        return youtube_metadata(source, youtube)
     with applog.step("source.validate", f"Check source {source}"):
         meta = ingest.probe_source(source)
         info = ingest.describe_source(meta)
     if meta.get("probe_error"):
         applog.warning("source.validate", "yt-dlp could not read the URL",
                        error=meta["probe_error"])
+        if compliance.is_youtube(source) and youtube is not None:
+            try:                        # official metadata as a fallback description
+                return youtube_metadata(source, youtube)
+            except ValueError:
+                pass
     return {**info, "source": source, "title": meta.get("title"),
             "probe_error": meta.get("probe_error"),
             "duration": meta.get("duration"),
@@ -214,7 +210,7 @@ def source_problem(source):
         return "Empty source line."
     source = source.strip()
     if ingest.is_url(source):
-        return compliance.MESSAGE if compliance.blocked(source) else None
+        return None
     if re.match(r"^[a-z][a-z0-9+.-]*://", source, re.I) or source.lower().startswith("www."):
         return f"Not a usable URL (use a full http(s) link): {source}"
     if not Path(source).expanduser().is_file():
@@ -389,7 +385,11 @@ class Studio:
         if code:
             error = projects.read_project(path).get("error") or f"Worker exited with {code}."
             exc = RuntimeError(error)
-            exc.retryable = False          # the same input fails the same way
+            # The same input fails the same way - except a download that hit the
+            # network (yt-dlp / HTTP errors, timeouts): the scheduler retries it.
+            exc.retryable = bool(re.search(
+                r"(?i)unable to download|http error|timed? ?out|connection|temporar|"
+                r"network|getaddrinfo|reset by peer|incomplete|ssl", error or ""))
             raise exc
         if payload.get("action") == "render" and not payload.get("preview"):
             self._offer_project_clips(project_id, path)
@@ -421,8 +421,10 @@ class Studio:
         gpu = ["gpu"] if (options.get("transcriber") or "local") == "local" else []
         tasks = []
         if action in ("prepare", "all"):
+            # URL sources download inside analysis: network failures retry (3 tries).
             tasks += [{"stage": "ingest", "payload": {"check": True}},
-                      {"stage": "analysis", "payload": {"action": "prepare"}, "resources": gpu}]
+                      {"stage": "analysis", "payload": {"action": "prepare"}, "resources": gpu,
+                       "max_failures": 3 if ingest.is_url(state.get("source") or "") else 1}]
         if action in ("all", "render"):
             tasks.append({"stage": "render", "payload": {"action": "render", "preview": preview,
                                                          "pick": pick}})
@@ -632,7 +634,7 @@ class Studio:
             self.monitor_next = None
             if self.closing or not settings["monitor_enabled"] or not self.settings.channels():
                 return
-            if not compliance.youtube_downloads_allowed() and not any(
+            if not compliance.external_monitoring_allowed() and not any(
                     c.get("own") and not c.get("inactive") for c in self.settings.channels()):
                 return              # only your own channel is monitored (official API)
             delay = settings["monitor_interval_minutes"] * 60
@@ -658,15 +660,6 @@ class Studio:
 
             def handle(kind, entry, channel):
                 if self.find_duplicate(entry["url"]) is not None:
-                    return True
-                if not compliance.youtube_downloads_allowed():
-                    # Metadata only: report it with a link; never download.
-                    if kind == "upcoming":
-                        return False             # report it when it goes live
-                    what = "is live" if kind == "live" else "has a new upload"
-                    self.events.add("monitor", f"Your channel {what}: {entry['url']} "
-                                    "(metadata only; YouTube downloads are off, so add a "
-                                    "local copy or your OBS recording to clip it).")
                     return True
                 if kind == "upcoming":
                     return False                 # look again when it is live
@@ -1112,7 +1105,6 @@ class Studio:
                 raise ValueError("This stream is already recorded. Create a new "
                                  "project to record it again.")
             url = (rec or {}).get("url") or state.get("source_url") or state["source"]
-            compliance.require(url, "live recording")
             if not ingest.is_url(url):
                 raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
             if not isinstance(rec, dict):
@@ -1676,7 +1668,6 @@ class Handler(BaseHTTPRequestHandler):
                     source = body.get("source")
                     if not isinstance(source, str) or not ingest.is_url(source.strip()):
                         raise ValueError("Recording needs a YouTube live or upcoming stream URL.")
-                    compliance.require(source.strip(), "live recording")
                     state = live.start_recording_project(
                         self.app.root, source.strip(), body.get("settings"),
                         body.get("options", {}))
@@ -1689,7 +1680,14 @@ class Handler(BaseHTTPRequestHandler):
                     sources = body["sources"]
                     if not isinstance(sources, list) or not 1 <= len(sources) <= 100 or any(not isinstance(s, str) or not s.strip() for s in sources):
                         raise ValueError("Provide 1 to 100 sources.")
-                    options = projects.validate_options(body.get("options", {}))
+                    raw = body.get("options", {})
+                    if not isinstance(raw, dict):
+                        raise ValueError("options must be an object.")
+                    # New projects follow the AI settings' routes (Groq, ...) unless
+                    # the form chose otherwise; validating first would fill in the
+                    # local defaults and hide the routes.
+                    options = projects.validate_options({**projects.NEW_PROJECT_DEFAULTS,
+                                                         **projects.ai_defaults(raw), **raw})
                     allow = body.get("allow_duplicates", False)
                     if not isinstance(allow, bool):
                         raise ValueError("allow_duplicates must be true or false.")

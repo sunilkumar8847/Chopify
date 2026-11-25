@@ -176,9 +176,6 @@ def ensure_section(url, workdir, index, start, end, runner=None):
             })
             return section
         except Exception as exc:  # try the next quality, then surface it
-            import compliance
-            if isinstance(exc, compliance.YouTubeBlocked):
-                raise                        # policy, not a download problem
             last_error = exc
             if isinstance(exc, ingest.SectionDownloadTimeout):
                 break

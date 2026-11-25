@@ -338,9 +338,6 @@ def main():
             if not args.url:
                 ap.error("new projects require a local video or URL")
             source = str(Path(args.url).resolve()) if Path(args.url).is_file() else args.url
-            import compliance
-            if compliance.blocked(source):
-                ap.exit(1, compliance.MESSAGE + chr(10))
             options = prompt_scoring(options, interactive=interactive,
                                      ask_score=ask_score, ask_length=ask_length)
             projects.init_project(path, source, options)

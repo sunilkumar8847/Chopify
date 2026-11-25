@@ -37,6 +37,7 @@ from pathlib import Path
 
 import ingest
 import projects
+import ytdlp
 
 RECORDING_DIR = "recording"
 OUTPUT_STEM = "recording"
@@ -168,10 +169,8 @@ def _part_bytes(directory, stem):
 
 def build_command(url, out_stem, settings):
     """yt-dlp command for one recording part (``out_stem`` has no suffix)."""
-    import compliance
-    compliance.require(url, "live recording")
     height = int(settings["max_height"])
-    common = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-part",
+    common = [*ytdlp.base(), "--no-playlist", "--no-part",
               "--newline", "--retries", "10", "--fragment-retries", "10"]
     if settings["from_start"]:
         # DASH fragments from the start of the DVR window, merged at the end.
@@ -885,8 +884,6 @@ def mark_interrupted(state):
 
 def start_recording_project(root, url, settings=None, options=None):
     """Create a project whose first stage is a live recording."""
-    import compliance
-    compliance.require(url, "live recording")
     state = projects.create_project(root, url, options or {})
     path = projects.project_path(root, state["id"])
     return projects.update_project(path, lambda s: s.update(

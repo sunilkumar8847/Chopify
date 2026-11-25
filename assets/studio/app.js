@@ -215,14 +215,6 @@ function showCompliance() {
   if (!note || !info) return;
   note.hidden = !info.message;
   note.textContent = info.message || "";
-  if (info.message) {
-    $("#sources").placeholder =
-      "C:\\Videos\\recording.mp4\nD:\\OBS\\2026-11-22 20-15-01.mkv";
-    $("#sources-hint").textContent =
-      "One source per line. Local files and OBS recordings stay in place. Authorized " +
-      "direct media URLs download to their project folder. YouTube links are " +
-      "metadata-only: use Check source to look one up.";
-  }
 }
 
 async function config() {

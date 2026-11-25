@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### YouTube downloading enabled (owner's decision, 2026-11-25)
+- The Phase 0 YouTube download switch is removed (`CHOPIFY_YOUTUBE_DOWNLOADS`,
+  `features.json` `youtube_downloads`, `compliance.require/blocked`). Find
+  clips downloads YouTube watch, youtu.be, Shorts and live links with yt-dlp
+  into the project folder and runs the normal pipeline through the
+  scheduler; Check source reads links with yt-dlp (official API as
+  fallback); the Record button works again.
+- YouTube live streams can be live sessions (`live_ingest`: yt-dlp resolves
+  the HLS address at every connect; links that are not live are refused).
+- `ytdlp.py`: every yt-dlp call adds `--js-runtimes node` when Node.js is
+  installed; `yt-dlp-ejs` (challenge solver) added; yt-dlp 2026.11.23.
+- Network failures while downloading retry up to three times.
+- Monitoring other channels stays opt-in (`CHOPIFY_YOUTUBE_MONITORING` /
+  `features.json` `youtube_monitoring`); own-channel uploads now become projects.
+- Fix: projects created by Studio's Find clips now follow the AI settings'
+  routes (Groq) - form validation used to fill in local defaults first.
+- docs/COMPLIANCE.md records the policy trade-off (YouTube API Developer
+  Policies III.E.1) accepted by the owner.
+- Fix: Find clips requests without an aspect ratio now get the new-project
+  defaults (9:16 Shorts) instead of the CLI's 16:9.
+- Real tests (openly licensed / public-domain material): NASA ScienceCasts
+  watch link -> download, Groq transcription and judging, two 1080x1920
+  Shorts; youtu.be and /shorts/ links -> download and transcription; NASA ISS
+  live stream -> live session (175 s buffered at 720p). Groq Free, $0.
+
 ### Phase 9: integration, resilience and performance testing
 - `winjob.py`: Studio's workers and live ffmpeg processes join a Windows Job
   Object (kill-on-close); killing Studio no longer leaves workers running.

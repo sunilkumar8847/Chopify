@@ -1,5 +1,6 @@
 # Viral clip pipeline - fully local, no paid APIs
 yt-dlp
+yt-dlp-ejs   # YouTube challenge solver used with the Node.js runtime (ytdlp.py)
 faster-whisper
 opencv-python
 numpy

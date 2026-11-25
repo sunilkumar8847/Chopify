@@ -225,15 +225,15 @@
             <label>Source type<select name="kind">
                 <option value="obs_folder">OBS output folder (record as MKV)</option>
                 <option value="srt">SRT (srt://host:port?mode=listener)</option>
-                <option value="url">Direct media URL (HLS/RTMP you may use)</option>
+                <option value="url">Direct media URL or YouTube live link</option>
               </select></label>
             <label>Folder or address<input name="source" required
                 placeholder="D:\OBS\Recordings  or  srt://0.0.0.0:9000?mode=listener" /></label>
             <label>Name<input name="title" maxlength="80" placeholder="GTA night stream" /></label>
             <button type="submit">Start live session</button>
           </form>
-          <p class="hint">Up to 5 sources at once (live sessions and videos together). YouTube
-            addresses cannot be recorded. Chopify keeps a rolling buffer of the last 30 minutes;
+          <p class="hint">Up to 5 sources at once (live sessions and videos together). A YouTube
+            link must be live now (use Find clips for videos). Chopify keeps a rolling buffer of the last 30 minutes;
             moments marked for clips are kept until their clip is made.</p>
           <div id="live-sessions" class="live-sessions" aria-live="polite"></div>
         </section>
@@ -332,8 +332,8 @@
             placeholder="C:\Videos\podcast.mp4&#10;https://youtube.com/watch?v=..."
           ></textarea>
           <p id="sources-hint" class="hint">
-            One source per line. Local files stay in place. Authorized direct
-            media URLs download to their project folder.
+            One source per line. Local files stay in place. YouTube links (videos,
+            Shorts, live) and direct media URLs download to their project folder.
           </p>
           <p id="compliance-note" class="hint compliance-note" role="note" hidden></p>
           <div class="detect-row">

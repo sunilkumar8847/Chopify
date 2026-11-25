@@ -68,6 +68,16 @@ class FakeAccount:
         return 200, {}, json.dumps({"items": items}).encode()
 
 
+@pytest.fixture(autouse=True)
+def yt_dlp_cannot_read(monkeypatch):
+    """Check source reads YouTube with yt-dlp first; these tests cover the
+    official videos.list fallback used when yt-dlp cannot read the link."""
+    import ingest
+    monkeypatch.setattr(ingest, "probe_source", lambda source: {
+        "source": source, "is_url": True, "probe_error": "yt-dlp could not read it",
+        "live_status": None, "duration": None, "title": None})
+
+
 @pytest.fixture
 def no_processes(monkeypatch):
     def refuse(*args, **kwargs):
@@ -84,7 +94,7 @@ def test_source_check_uses_videos_list_and_shows_metadata(no_processes):
     assert result["label"] == "YouTube video" and result["title"] == "Big race"
     assert result["channel"] == "My Channel" and result["duration"] == 3723
     assert "1:02:03" in result["message"] and "1,234 views" in result["message"]
-    assert "YouTube Studio" in result["message"], "explains how to clip your own video"
+    assert result["blocked"] is False, "YouTube downloads are enabled"
     assert result["can_record"] is False and result["metadata_source"] == "youtube_data_api"
     assert len(account.calls) == 1 and "/videos?" in account.calls[0]
     assert "part=snippet%2CcontentDetails%2Cstatus" in account.calls[0]
@@ -107,13 +117,12 @@ def test_missing_video_and_non_video_links_are_explained(no_processes):
     assert result["label"] == "Not a YouTube video link"
 
 
-def test_quota_or_connection_failure_never_falls_back(no_processes):
-    client = youtube_data.DataClient(FakeAccount(quota=True))
-    with pytest.raises(ValueError, match="quota is used up"):
-        dashboard.detect_source(f"https://youtu.be/{VIDEO}", client)
-    client = youtube_data.DataClient(FakeAccount(connected=False), api_key="")
-    with pytest.raises(ValueError, match="Connect your YouTube channel"):
-        dashboard.detect_source(f"https://youtu.be/{VIDEO}", client)
+def test_quota_or_connection_failure_reports_the_yt_dlp_problem(no_processes):
+    """Both readers failed: the yt-dlp problem is reported, nothing crashes."""
+    for client in (youtube_data.DataClient(FakeAccount(quota=True)),
+                   youtube_data.DataClient(FakeAccount(connected=False), api_key="")):
+        result = dashboard.detect_source(f"https://youtu.be/{VIDEO}", client)
+        assert result["probe_error"] == "yt-dlp could not read it"
 
 
 def test_api_key_stays_on_the_server_and_out_of_logs(no_processes, monkeypatch):
@@ -221,7 +230,7 @@ def test_monitor_quota_failure_changes_nothing_and_never_falls_back(tmp_path, no
     assert all("quota" in r.get("error", "") for r in results)
 
 
-def test_studio_reports_new_uploads_without_creating_projects(tmp_path, monkeypatch, no_processes):
+def test_studio_turns_new_uploads_into_projects(tmp_path, monkeypatch, no_processes):
     account = FakeAccount(videos=[video_item("vid00000003")], uploads=["vid00000003"])
     monkeypatch.setattr(dashboard.Studio, "youtube_data",
                         lambda self: youtube_data.DataClient(account))
@@ -233,12 +242,16 @@ def test_studio_reports_new_uploads_without_creating_projects(tmp_path, monkeypa
             "added": 1, "baseline": True, "seen": [], "last_check": None,
             "last_error": None, "found": 0, "own": True}])
         app.settings.update({"monitor_enabled": True, "new_source_action": "prepare"})
+        queued = []
+        monkeypatch.setattr(app, "enqueue", lambda pid, action, *a, **k: queued.append(
+            (pid, action)))
         app.check_channels()
-        assert app.list_projects() == [], "metadata only: nothing processed or downloaded"
+        sources = [p["source"] for p in app.list_projects()]
+        assert sources == ["https://www.youtube.com/watch?v=vid00000003"], \
+            "a new upload on your channel becomes a project (downloads are enabled)"
+        assert queued and queued[0][1] == "prepare"
         events = [e["message"] for e in app.events.tail(50)]
-        assert any("https://www.youtube.com/watch?v=vid00000003" in m and "metadata only" in m
-                   for m in events)
-        assert all("My upload" not in m for m in events), "no API titles kept in history"
+        assert any("new video" in m for m in events)
         app._schedule_monitor()
         assert app.monitor_timer is not None, "own channel monitoring is scheduled"
     finally:

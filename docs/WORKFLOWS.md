@@ -3,9 +3,9 @@
 Chopify turns your own recordings and live sessions into short, captioned
 clips. Editing and rendering run on your computer; transcription and AI judging
 use the AI route you choose (local models, or Groq Free by default for new
-projects; see docs/AI.md). YouTube links can be looked up for public metadata
-only: downloading or recording YouTube video is disabled pending YouTube's
-written approval (docs/COMPLIANCE.md).
+projects; see docs/AI.md). YouTube links (videos, youtu.be, Shorts and live
+streams) are downloaded with yt-dlp; see docs/COMPLIANCE.md for the policy
+trade-off.
 
 ## Start Studio (Windows 11)
 

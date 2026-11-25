@@ -28,6 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import jsoncache
+import ytdlp
 
 STATE_DIR = ".studio"
 SETTINGS_FILE = "automation.json"
@@ -276,9 +277,7 @@ def normalize_channel(url):
 
 def ytdlp_lister(channel_url, tab, limit=MONITOR_LATEST, timeout=120):
     """Newest entries of a channel tab via yt-dlp (no downloads)."""
-    import compliance
-    compliance.require(channel_url, "channel monitoring")
-    cmd = [sys.executable, "-m", "yt_dlp", "--flat-playlist", "-J", "--no-warnings",
+    cmd = [*ytdlp.base(), "--flat-playlist", "-J", "--no-warnings",
            "--playlist-end", str(limit), f"{channel_url}/{tab}"]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=timeout)
@@ -313,7 +312,7 @@ class Monitor:
 
     def add(self, url, label=""):
         import compliance
-        if not compliance.youtube_downloads_allowed():
+        if not compliance.external_monitoring_allowed():
             return self._add_own(url, label)
         url = normalize_channel(url)
         channels = self.settings.channels()
@@ -440,7 +439,7 @@ class Monitor:
         adding a channel never processes its back catalogue.
         """
         import compliance
-        if self.lister is ytdlp_lister and not compliance.youtube_downloads_allowed():
+        if self.lister is ytdlp_lister and not compliance.external_monitoring_allowed():
             return self._check_official(handle)
         with self.lock:
             channels = self.settings.channels()

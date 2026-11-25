@@ -35,13 +35,14 @@ An error shown in Studio that ends with "(request abc123...)" can be looked
 up with `--request`. Each project's `job.log` still holds the full output of
 its jobs.
 
-## "YouTube downloads are turned off"
+## A YouTube link fails to download
 
-Chopify does not download, record or read YouTube videos, captions or
-channels without YouTube's written approval. Use a local recording or an OBS
-output folder. Existing projects keep working. See
-[COMPLIANCE.md](COMPLIANCE.md) for what is affected and how to turn it back
-on once approval exists.
+Find clips downloads YouTube links (videos, youtu.be, Shorts, live) with
+yt-dlp. Private, members-only, age-restricted or region-blocked videos cannot
+be downloaded without signing in. YouTube changes often: update yt-dlp with
+`.venv\Scripts\python -m pip install -U yt-dlp`. A network failure during
+the download is retried automatically (three tries). See
+[COMPLIANCE.md](COMPLIANCE.md).
 
 ## Find clips does nothing
 

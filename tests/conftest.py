@@ -32,13 +32,14 @@ def _isolated_logs(monkeypatch, tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _legacy_youtube_paths(monkeypatch, request):
-    # Existing tests exercise the (fake) YouTube download paths, which stay in
-    # the code for when YouTube grants written approval. They run with the
-    # switch on; tests marked ``compliance_default`` see the real default (off).
+    # YouTube downloads are always on. Older tests also exercise monitoring of
+    # other channels (yt-dlp listing), which is opt-in: they run with it on;
+    # tests marked ``compliance_default`` see the real default (off).
+    monkeypatch.delenv("CHOPIFY_YOUTUBE_DOWNLOADS", raising=False)
     if request.node.get_closest_marker("compliance_default"):
-        monkeypatch.delenv("CHOPIFY_YOUTUBE_DOWNLOADS", raising=False)
+        monkeypatch.delenv("CHOPIFY_YOUTUBE_MONITORING", raising=False)
     else:
-        monkeypatch.setenv("CHOPIFY_YOUTUBE_DOWNLOADS", "1")
+        monkeypatch.setenv("CHOPIFY_YOUTUBE_MONITORING", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +55,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "scheduler: run with the Phase 2 persistent scheduler (the default)")
     config.addinivalue_line(
-        "markers", "compliance_default: run with YouTube downloads at their real default (off)")
+        "markers", "compliance_default: run with external channel monitoring at its real default (off)")
 
 
 ENV_NAMES = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "NVIDIA_API_KEY",

@@ -8,8 +8,10 @@ Sources, in order of preference:
    switches to a new file when OBS starts one.
 2. **SRT** - ``srt://host:port?mode=listener`` (OBS/encoder pushes to
    Chopify) or ``mode=caller`` (Chopify pulls).
-3. **Direct media URL** - an HLS/RTMP/HTTP(S) feed you are authorized to
-   use. YouTube addresses are refused (``compliance``); yt-dlp is never used.
+3. **Direct media URL** - an HLS/RTMP/HTTP(S) feed, or a YouTube live stream
+   (watch/live/youtu.be link): yt-dlp resolves the stream's current HLS
+   address at every (re)connect and ffmpeg segments it like any other feed.
+   A YouTube link that is not live now is refused (use Find clips for it).
 
 Each session cuts the input into ~6-second MPEG-TS segments (stream copy,
 cut at keyframes) under ``<project>/live/segments`` and indexes them in
@@ -40,6 +42,7 @@ import applog
 import compliance
 import projects
 import winjob
+import ytdlp
 
 SEGMENT_SECONDS = 6
 MAX_SESSIONS = 5
@@ -210,13 +213,47 @@ def validate_source(kind, source):
             raise LiveError(f"OBS output folder not found: {source}")
         return str(folder.resolve())
     if compliance.is_youtube(source):
-        raise LiveError(compliance.MESSAGE)
+        if kind != "url":
+            raise LiveError("Use 'Direct media URL' for a YouTube live stream.")
+        status = youtube_live_status(source)
+        if status != "is_live":
+            raise LiveError("This YouTube link is not live right now "
+                            f"({status or 'not a live stream'}). Use Find clips for videos; "
+                            "start the live session once the stream is live.")
+        return source
     parsed = urlparse(source)
     allowed = {"srt"} if kind == "srt" else {"http", "https", "rtmp", "rtmps", "srt"}
     if parsed.scheme.lower() not in allowed or not parsed.hostname:
         raise LiveError("Use srt://host:port for SRT, or an http(s)/rtmp media address."
                         if kind == "srt" else "Use an http(s), rtmp(s) or srt media address.")
     return source
+
+
+def youtube_live_status(url, timeout=120):
+    """yt-dlp's live_status for a YouTube link ("is_live", "is_upcoming", ...)."""
+    import ingest
+    meta = ingest.probe_source(url)
+    if meta.get("probe_error"):
+        raise LiveError(f"YouTube could not be read: {meta['probe_error']}")
+    return meta.get("live_status")
+
+
+def resolve_youtube_stream(url, timeout=120):
+    """Current HLS addresses of a live YouTube stream (they change over time).
+
+    YouTube live offers separate video and audio streams, so this usually
+    returns [video_url, audio_url]; a combined stream gives one address.
+    """
+    cmd = [*ytdlp.base(), "-g", "--no-playlist", "-f",
+           "bestvideo[height<=720][protocol*=m3u8]+bestaudio[protocol*=m3u8]/"
+           "best[height<=720][protocol*=m3u8]/best", url]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout)
+    lines = [l.strip() for l in proc.stdout.splitlines() if l.strip().startswith("http")]
+    if proc.returncode or not lines:
+        raise LiveError("yt-dlp could not resolve the live stream: "
+                        + (proc.stderr.strip().splitlines() or ["no address"])[-1][:200])
+    return lines[:2]
 
 
 def newest_recording(folder, after=None):
@@ -297,10 +334,19 @@ class Session:
             joiner = "&" if "?" in source else "?"
             cmd += ["-i", f"{source}{joiner}timeout={timeout}"]
         else:
-            if source.lower().startswith("http"):
-                cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-            cmd += ["-rw_timeout", timeout, "-i", source]
-        cmd += ["-map", "0:v?", "-map", "0:a?", "-c", "copy", "-f", "segment",
+            # A YouTube live link is resolved to fresh HLS addresses at every
+            # connect (usually separate video and audio streams).
+            inputs = resolve_youtube_stream(source) if compliance.is_youtube(source) else [source]
+            for address in inputs:
+                if address.lower().startswith("http"):
+                    cmd += ["-reconnect", "1", "-reconnect_streamed", "1",
+                            "-reconnect_delay_max", "10"]
+                cmd += ["-rw_timeout", timeout, "-i", address]
+            if len(inputs) == 2:
+                cmd += ["-map", "0:v?", "-map", "1:a?"]
+        if not (kind == "url" and "-map" in cmd):
+            cmd += ["-map", "0:v?", "-map", "0:a?"]
+        cmd += ["-c", "copy", "-f", "segment",
                 "-segment_time", str(SEGMENT_SECONDS), "-reset_timestamps", "1",
                 "-segment_format", "mpegts", "-segment_list", str(list_file),
                 "-segment_list_type", "csv", "-segment_list_flags", "+live",
@@ -351,8 +397,17 @@ class Session:
             connected_at = self.clock()
             log = (self.path / "live" / "ffmpeg.log").open("ab")
             try:
-                self.child = subprocess.Popen(self._command(list_file, start_number),
-                                              stdin=subprocess.PIPE,
+                command = self._command(list_file, start_number)
+            except (LiveError, subprocess.SubprocessError) as exc:
+                log.close()               # e.g. YouTube address not resolvable right now
+                backoff = min(float(self.settings["max_backoff_seconds"]), backoff * 2)
+                self._save(message=f"{exc} Retrying in {backoff:.0f}s.",
+                           reconnects=int(self.info.get("reconnects", 0)) + 1)
+                if self.stop_event.wait(backoff):
+                    break
+                continue
+            try:
+                self.child = subprocess.Popen(command, stdin=subprocess.PIPE,
                                               stdout=subprocess.DEVNULL, stderr=log)
                 winjob.attach(self.child)        # ends with Studio, even after a crash
             except OSError as exc:

@@ -1,53 +1,32 @@
-"""YouTube content-access compliance switch (Phase 0).
+"""YouTube access rules.
 
-YouTube's API Developer Policies (III.E.1) say an API client - and Chopify
-is one, because it uploads and checks videos through the YouTube Data API -
-must not "download, import, backup, cache, or store copies of YouTube
-audiovisual content without YouTube's prior written approval".
+**YouTube downloads are enabled.** On 2026-11-25 the user asked for the
+Phase 0 download switch to be removed: Find clips, live recording, section
+and caption downloads now use yt-dlp for YouTube URLs (standard videos,
+youtu.be, Shorts and live streams) like any other source.
 
-Until that approval exists, every unofficial YouTube access path is off for
-new work:
+The user accepted the trade-off: YouTube's API Services Developer Policies
+(III.E.1) do not allow an API client - Chopify is one, for uploads, Check
+source fallback and discovery - to download YouTube audiovisual content
+without YouTube's written approval, so this can affect the Google Cloud
+project behind the YouTube connection. Copyright in downloaded videos is the
+user's responsibility.
 
-* URL audio/video downloads, section and full-source downloads (yt-dlp)
-* metadata probes of YouTube URLs through yt-dlp ("Check source")
-* caption fetching through yt-dlp
-* yt-dlp live recording
-* yt-dlp channel monitoring
-
-Not affected: local files and recordings, other direct sources, everything
-already stored in existing projects (viewing, editing, rendering from
-cached media, publishing), and the official YouTube Data API (uploads,
-verification).
-
-Turning it back on (only once YouTube's written approval exists):
-* config folder (``youtube_auth.config_dir()``, %APPDATA%\\Chopify by default):
-  ``features.json`` -> ``{"youtube_downloads": true}``; or
-* environment variable ``CHOPIFY_YOUTUBE_DOWNLOADS=1``.
+Still official-API only, unchanged:
+* channel monitoring covers the connected channel only (III.E.2). Monitoring
+  other channels by listing them with yt-dlp stays off unless the user turns
+  it on explicitly: ``features.json`` -> ``{"youtube_monitoring": true}`` in
+  the config folder, or ``CHOPIFY_YOUTUBE_MONITORING=1``;
+* discovery (search.list / videos.list) and publishing.
 """
 import json
 import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-import applog
-
 FEATURES_FILE = "features.json"
-ENV = "CHOPIFY_YOUTUBE_DOWNLOADS"
+MONITOR_ENV = "CHOPIFY_YOUTUBE_MONITORING"
 YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com")
-MESSAGE = ("YouTube links can be checked for public metadata using the official Data "
-           "API (Check source). Downloading or recording YouTube audiovisual content is "
-           "disabled pending written approval (YouTube API Developer Policies, section "
-           "III.E.1), so Find clips cannot process a YouTube URL directly. To create "
-           "clips, import an authorized local recording (OBS recordings included) or use "
-           "a supported direct media source. Existing projects stay available.")
-
-
-class YouTubeBlocked(ValueError):
-    """An unofficial YouTube access path was attempted while it is off."""
-
-    def __init__(self, operation=""):
-        self.operation = operation
-        super().__init__(MESSAGE)
 
 
 def is_youtube(url):
@@ -64,42 +43,28 @@ def _config_file():
     return Path(youtube_auth.config_dir()) / FEATURES_FILE
 
 
-def youtube_downloads_allowed():
-    """Off unless explicitly enabled (environment variable or features.json)."""
-    value = os.environ.get(ENV)
+def external_monitoring_allowed():
+    """Monitoring channels other than your own (yt-dlp listing). Off unless enabled."""
+    value = os.environ.get(MONITOR_ENV)
     if value is not None:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     try:
         data = json.loads(_config_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):        # missing, unreadable, not UTF-8, not JSON
         return False
-    # Anything but a JSON object with a literal true keeps the restriction.
-    return isinstance(data, dict) and data.get("youtube_downloads") is True
+    # Anything but a JSON object with a literal true keeps it off.
+    return isinstance(data, dict) and data.get("youtube_monitoring") is True
 
 
-def blocked(url):
-    return is_youtube(url) and not youtube_downloads_allowed()
-
-
-def require(url, operation):
-    """Raise YouTubeBlocked before any unofficial access to a YouTube URL."""
-    if blocked(url):
-        applog.warning("compliance.blocked", f"Blocked YouTube {operation}",
-                       access=operation, url=str(url)[:200])
-        raise YouTubeBlocked(operation)
-
-
-# Each YouTube capability on its own (Phase 0.1). Only the audiovisual paths
-# depend on the download switch; the rest use official APIs or wait.
 CAPABILITIES = {
-    "metadata_lookup": ("official_api", "Check source uses YouTube Data API videos.list."),
+    "metadata_lookup": ("enabled", "Check source reads YouTube links with yt-dlp; the official "
+                        "Data API is used when yt-dlp cannot read the link."),
+    "audiovisual_download": ("enabled", "Find clips downloads YouTube videos with yt-dlp."),
+    "url_live_recording": ("enabled", "YouTube live streams can be recorded."),
     "own_channel_monitoring": ("official_api", "Your connected channel only: "
                                "channels.list + playlistItems.list + videos.list."),
-    "discovery": ("planned", "Official search.list / videos.list in the discovery phase."),
-    "caption_download": ("deferred", "captions.download needs permission to edit the "
-                         "video; not used. Speech-to-text is used instead."),
-    "audiovisual_download": ("approval_required", "Off until YouTube grants written approval."),
-    "url_live_recording": ("approval_required", "Off until YouTube grants written approval."),
+    "discovery": ("official_api", "search.list / videos.list."),
+    "caption_download": ("enabled", "Caption tracks are fetched with yt-dlp when available."),
 }
 EXTERNAL_CHANNEL = ("Only your own connected channel can be monitored through the official "
                     "YouTube API: YouTube Developer Policies III.E.2 do not allow combining "
@@ -109,10 +74,6 @@ EXTERNAL_CHANNEL = ("Only your own connected channel can be monitored through th
 
 def status():
     """What the Studio UI shows."""
-    allowed = youtube_downloads_allowed()
     caps = {name: {"state": state, "note": note} for name, (state, note) in CAPABILITIES.items()}
-    if allowed:
-        for name in ("audiovisual_download", "url_live_recording"):
-            caps[name]["state"] = "enabled"
-    return {"youtube_downloads": allowed, "message": None if allowed else MESSAGE,
-            "capabilities": caps}
+    return {"youtube_downloads": True, "message": None,
+            "external_monitoring": external_monitoring_allowed(), "capabilities": caps}

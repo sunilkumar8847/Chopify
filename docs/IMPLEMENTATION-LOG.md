@@ -77,3 +77,15 @@ workers surviving a killed Studio fixed with a Job Object.
 * Startup check (normal `dashboard.py` command, isolated folders): 15/15.
 * Full suite: 1026 passed, 0 failed, 0 skipped.
 * Scene filtering stays off: no authorized real gameplay recording with labels.
+
+## YouTube downloading (2026-11-25, owner's request)
+Removed the Phase 0 switch; YouTube links download with yt-dlp (+ Node.js
+runtime and yt-dlp-ejs; yt-dlp 2026.11.23). Real end-to-end run
+(youtube-20261125-110903): standard watch link through download, Groq
+transcription (404 words) and judging to two 1080x1920 Shorts (37.4 s,
+43.8 s, decode cleanly); youtu.be and /shorts/ links downloaded and
+transcribed (350 words); NASA ISS live stream ingested as a live session
+(29 segments, 175 s, 720p, no reconnects). Found and fixed: Studio projects
+ignored the AI routes; API Find clips defaulted to 16:9; YouTube live needs
+separate video+audio HLS inputs. Tests encoding "downloads blocked" were
+rewritten for the new requirement.

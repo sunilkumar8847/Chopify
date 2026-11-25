@@ -443,33 +443,31 @@ def test_new_project_form_defaults_to_shorts(browser, studio):
 # ------------------------------------------------- Phase 0: compliance
 
 @pytest.mark.compliance_default
-def test_youtube_links_are_explained_and_nothing_is_created(browser, studio):
+def test_youtube_links_go_into_find_clips(browser, studio, monkeypatch):
+    """YouTube downloads are enabled: no restriction note, Find clips creates
+    and queues a project for a YouTube link (the fake worker stands in for
+    the download), and Check source reads the link with yt-dlp."""
+    import ingest
+    monkeypatch.setattr(ingest, "probe_source", lambda source: {
+        "source": source, "is_url": True, "live_status": "not_live", "duration": 150.0,
+        "title": "Caminandes 3: Llamigos", "probe_error": None})
     open_studio(browser, studio)
-    browser.wait("!document.querySelector('#compliance-note').hidden", timeout=10)
-    note = browser.evaluate("document.querySelector('#compliance-note').textContent")
-    assert "public metadata using the official Data API" in note
-    assert "disabled pending written approval" in note
-    assert "Find clips cannot process a YouTube URL directly" in note
-    assert "authorized local recording" in note and "OBS" in note
-    assert "does not download, record or read" not in note
+    assert browser.evaluate("document.querySelector('#compliance-note').hidden") is True
     hint = browser.evaluate("document.querySelector('#sources-hint').textContent")
-    assert "YouTube links are metadata-only" in hint and "Authorized direct media URLs" in hint
-    assert "URLs download to their project folder" not in hint.replace(
-        "direct media URLs download to their project folder", "")
-    assert "youtube" not in browser.evaluate("document.querySelector('#sources').placeholder").lower()
+    assert "YouTube links" in hint and "download to their project folder" in hint
+    assert "metadata-only" not in hint
     click_find_clips(browser, source="https://www.youtube.com/watch?v=aaaaaaaaaaa")
-    browser.wait("document.querySelector('#notice').classList.contains('error')", timeout=10)
-    assert "written approval" in notice(browser)
-    assert browser.api_requests("/api/batch")[0]["status"] == 400
-    assert studio.app.list_projects() == []
+    browser.wait("!document.querySelector('#project-view').hidden", timeout=15)
+    assert [r["status"] for r in browser.api_requests("/api/batch")] == [201]
+    assert [p["source"] for p in studio.app.list_projects()] == [
+        "https://www.youtube.com/watch?v=aaaaaaaaaaa"]
+    browser.evaluate("document.querySelector('#new-project').click()")
     browser.evaluate("document.querySelector('#sources').value = 'https://youtu.be/aaaaaaaaaaa';"
                      "document.querySelector('#detect').click()")
-    # Phase 0.1: Check source asks the official API; without a connected
-    # channel or server key it says so (and never falls back to yt-dlp).
-    browser.wait("document.querySelector('#notice').textContent.includes('official API')",
-                 timeout=10)
-    assert browser.evaluate("document.querySelector('#detect-record').hidden")
-    assert not [c for c in browser.console if c["level"] == "error" and "400" not in c.get("text", "")]
+    browser.wait("document.querySelector('#detect-result') && "
+                 "!document.querySelector('#detect-result').hidden", timeout=10)
+    assert "Caminandes" in browser.evaluate("document.querySelector('#detect-result').textContent")
+    assert not [c for c in browser.console if c["level"] == "error"]
 
 
 # ------------------------------------------------------- Phase 1: AI panel
@@ -653,8 +651,11 @@ def test_cancel_job_uses_the_studio_dialog(browser, studio, tmp_path):
 
 # ------------------------------------------------------- Phase 5: live sessions
 
-def test_live_session_starts_and_stops_from_the_dashboard(browser, studio, tmp_path):
+def test_live_session_starts_and_stops_from_the_dashboard(browser, studio, tmp_path,
+                                                         monkeypatch):
     import subprocess
+    import live_ingest
+    monkeypatch.setattr(live_ingest, "youtube_live_status", lambda url: "was_live")
     obs = tmp_path / "obs"
     obs.mkdir()
     writer = subprocess.Popen(
@@ -670,7 +671,8 @@ def test_live_session_starts_and_stops_from_the_dashboard(browser, studio, tmp_p
             "(() => { const f = document.querySelector('#live-form');"
             " f.elements.kind.value = 'url'; f.elements.source.value = 'https://youtu.be/x';"
             " f.querySelector('button').click(); })()")
-        browser.wait("document.querySelector('#notice').textContent.includes('written approval')",
+        # A YouTube link that is not live now is refused with a reason.
+        browser.wait("document.querySelector('#notice').textContent.includes('not live right now')",
                      timeout=10)
         browser.evaluate(
             "(() => { const f = document.querySelector('#live-form');"

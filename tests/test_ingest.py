@@ -74,7 +74,10 @@ def test_probe_url_estimates_best_video_plus_audio(monkeypatch):
     assert meta["duration"] == 7200
     assert meta["estimated_size"] >= 6 * 1024**3
     assert ingest.is_long_source(meta)
-    assert captured[0][2:5] == ["yt_dlp", "--dump-single-json", "--skip-download"]
+    import ytdlp
+    prefix = ytdlp.base()        # python -m yt_dlp [+ the JavaScript runtime flags]
+    assert captured[0][:len(prefix)] == prefix and captured[0][1:3] == ["-m", "yt_dlp"]
+    assert captured[0][len(prefix):len(prefix) + 2] == ["--dump-single-json", "--skip-download"]
 
 
 def test_probe_url_failure_stays_unknown(monkeypatch):

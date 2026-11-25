@@ -194,6 +194,17 @@ channels, nothing is downloaded. `GET /api/discover?q=&live=&order=&region=`,
   projects folder is unchanged), `recovery_test.py`, `stress.py`,
   `groq_check.py`.
 
+## YouTube downloading (2026-11-25)
+
+The compliance switch is gone: `compliance.py` now only recognises YouTube
+addresses, reports capabilities and keeps monitoring of other channels
+opt-in. YouTube URLs follow the pre-Phase-0 paths: `ingest.probe_source`,
+audio/section/full downloads and caption fetches through yt-dlp (all built
+by `ytdlp.base()`), `live.py` recording, and `live_ingest` live sessions for
+streams that are live. A Find clips job downloads inside the scheduler's
+analysis task, so it has the scheduler's progress, cancellation (the Job
+Object ends yt-dlp with the worker) and retries for network errors.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

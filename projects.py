@@ -40,6 +40,10 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    # Phase 3: keep each clip's setup and payoff (auto) or the
                    # discovered boundaries exactly (fixed).
                    "duration_mode": "auto",
+                   # How clips are found: "auto" (scored windows, minimum score)
+                   # or "story" (AI reads the whole transcript for complete
+                   # stories; adaptive selection). New projects use "story".
+                   "clip_mode": "auto",
                    "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "caption": None,
@@ -60,7 +64,7 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
 # What a project created today starts with (unless the caller chose).
 # whisper_model None means "the profile's model"; device auto picks the GPU
 # when it works and warns visibly when it falls back to CPU.
-NEW_PROJECT_DEFAULTS = {"profile": "balanced", "subtitles": "auto",
+NEW_PROJECT_DEFAULTS = {"profile": "balanced", "subtitles": "auto", "clip_mode": "story",
                         "device": "auto", "whisper_model": None,
                         # YouTube Shorts: vertical 1080x1920, 15-120 s clips.
                         "aspect": "9:16", "min_len": 15, "max_len": 120}
@@ -187,6 +191,10 @@ def validate_options(options):
         result["hinglish_ai"] = False
     if not isinstance(result["hinglish_ai"], bool):
         raise ValueError("hinglish_ai must be true or false.")
+    if result.get("clip_mode") is None:
+        result["clip_mode"] = DEFAULT_OPTIONS["clip_mode"]
+    if result["clip_mode"] not in ("auto", "story"):
+        raise ValueError("clip_mode must be auto or story.")
     if result["duration_mode"] is None:
         result["duration_mode"] = DEFAULT_OPTIONS["duration_mode"]
     if result["duration_mode"] not in boundaries.MODES:
@@ -300,6 +308,11 @@ def score_keys(transcript_key, data, options):
     selection_options = {key: options[key] for key in (
         "min_score", "max_clips", "llm")}
     selection_options["hooks"] = score_clips.HOOK_VERSION
+    if options.get("clip_mode") == "story":
+        import story
+        selection_options.update(clip_mode=["story", story.VERSION, story.PROMPT_VERSION],
+                                 llm_provider=options.get("llm_provider"),
+                                 min_len=options.get("min_len"), max_len=options.get("max_len"))
     if options.get("highlights"):
         # Judge results are cached separately, so re-selecting is cheap.
         selection_options.update(
@@ -753,7 +766,32 @@ def _run_project(path, action, preview, pick, resume, progress):
                     save_project(path, state)
 
                 stage("select")
-                if (not resume or state["cache"].get("selection") != selection_key
+                story_provider = None
+                if options.get("clip_mode") == "story":
+                    import story
+                    story_provider = story.available(options)
+                    if story_provider is None:
+                        print("Story mode needs the AI judge; it is not available, so "
+                              "clips are found with automatic scoring.", flush=True)
+                if (story_provider is not None and (
+                        not resume or state["cache"].get("selection") != selection_key
+                        or not segments_path.exists() or not selection_path.exists())):
+                    stage("stories")
+
+                    def story_progress(done, total):
+                        state["progress"] = {"stage": "stories", "done": done, "total": total,
+                                             "detail": f"part {done}/{total} read"}
+                        save_project(path, state)
+                    story.select(path, story_provider,
+                                 title=(state.get("source_meta") or {}).get("title")
+                                 or state.get("title") or "",
+                                 min_len=options["min_len"],
+                                 max_len=min(options["max_len"], SHORTS_MAX_SECONDS),
+                                 max_clips=options["max_clips"],
+                                 min_score=options["min_score"], progress=story_progress)
+                    state["cache"]["selection"] = selection_key
+                    save_project(path, state)
+                elif (not resume or state["cache"].get("selection") != selection_key
                         or not segments_path.exists() or not selection_path.exists()):
                     score_clips.select(
                         path,
@@ -787,6 +825,13 @@ def _run_project(path, action, preview, pick, resume, progress):
                 low = stats.get("score_min")
                 high = stats.get("score_max")
                 score = stats.get("min_score", options["min_score"] or 8.0)
+                if stats.get("mode") == "story":
+                    found = stats.get("candidates") or 0
+                    raise ValueError(
+                        f"Story mode found {found} complete stor{'y' if found == 1 else 'ies'}"
+                        f" but none reached the quality floor ({stats.get('floor')}). "
+                        + (" ".join(stats.get("warnings") or [])[:400]
+                           or "The video may have no stand-alone story moments."))
                 range_text = (f"Candidate scores {low:.1f}-{high:.1f}. "
                               if low is not None else "No candidates were found. ")
                 raise ValueError(f"{range_text}No clips reached {score:.1f}. "

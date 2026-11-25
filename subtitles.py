@@ -27,7 +27,7 @@ import unicodedata
 from pathlib import Path
 import ytdlp
 
-SUBTITLE_VERSION = 1
+SUBTITLE_VERSION = 2              # 2: styled tracks no longer double every word
 FILE_PREFIX = "captions"
 MIN_WORDS = 80                   # fewer words cannot drive discovery
 MIN_WORDS_PER_MINUTE = 8         # over the whole source
@@ -144,6 +144,7 @@ def _spread(text, start, end):
 def parse_json3(data):
     """Words from YouTube json3. Automatic tracks carry per-word offsets."""
     words = []
+    seen = set()
     for event in data.get("events") or []:
         segs = event.get("segs")
         if not segs:
@@ -153,6 +154,12 @@ def parse_json3(data):
         timed = [s for s in segs if _clean(s.get("utf8"))]
         if not timed:
             continue
+        # Styled tracks repeat each event once per pen (outline, text...):
+        # same start, same text. Keep one copy.
+        key = (event.get("tStartMs"), tuple(_clean(s.get("utf8")) for s in timed))
+        if key in seen:
+            continue
+        seen.add(key)
         if len(timed) > 1 or "tOffsetMs" in timed[0]:
             for i, seg in enumerate(timed):
                 w_start = start + float(seg.get("tOffsetMs") or 0) / 1000.0

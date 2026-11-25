@@ -125,7 +125,7 @@ class OpenRouterProvider(Provider):
         return {"ok": True, "detail": f"key valid; free-model requests left today: "
                                       f"{free.get('remaining', 'unknown')}"}
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         info = self.model(model_id)
         content = user
         if images:

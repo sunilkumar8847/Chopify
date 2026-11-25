@@ -119,7 +119,11 @@ class GroqProvider(Provider):
         return Transcription(segments, detected, total, probability, usage)
 
     # --------------------------------------------------------- generation
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, reasoning=None,
+                 max_output_tokens=None, **hints):
+        """``reasoning`` ("low"/"medium"/"high") applies to gpt-oss models; long
+        JSON tasks need "low" or the model spends its output on hidden reasoning
+        and returns no JSON (HTTP 400 "Failed to validate JSON")."""
         info = self.model(model_id)
         content = user
         if images:
@@ -130,6 +134,10 @@ class GroqProvider(Provider):
         payload = {"model": model_id, "temperature": 0,
                    "messages": [{"role": "system", "content": system},
                                 {"role": "user", "content": content}]}
+        if reasoning and model_id.startswith("openai/gpt-oss"):
+            payload["reasoning_effort"] = reasoning
+        if max_output_tokens:
+            payload["max_completion_tokens"] = int(max_output_tokens)
         if schema is not None:
             if info.strict_json and strict_compatible(schema):
                 payload["response_format"] = {"type": "json_schema", "json_schema": {

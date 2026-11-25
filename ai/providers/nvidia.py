@@ -49,7 +49,7 @@ class NvidiaProvider(Provider):
         _, _, body = self._request("GET", f"{API}/models", timeout=20)
         return {"ok": True, "detail": "key valid (trial: evaluation only)"}
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         self.model(model_id)
         if schema is not None:
             system += "\nAnswer with one JSON object matching this schema:\n" + json.dumps(schema)

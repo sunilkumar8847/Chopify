@@ -19,8 +19,17 @@ class Google(FakeGoogle):
     def __call__(self, method, url, headers=None, body=None, timeout=60):
         if url.startswith(f"{API}/videoCategories"):
             self.calls.append((method, url))
-            return 200, {}, json.dumps({"items": [{"id": "20", "snippet": {
-                "title": "Gaming", "assignable": self.assignable}}]}).encode()
+            # Like the real API: exactly one of id / regionCode / hl.
+            filters = [f for f in ("id=", "regionCode=", "hl=") if f"&{f}" in url or f"?{f}" in url]
+            if "id=" in url and "regionCode=" in url:
+                return 400, {}, json.dumps({"error": {"code": 400, "message": (
+                    "Incompatible parameters specified in the request: id, regionCode"),
+                    "errors": [{"reason": "incompatibleParameters"}]}}).encode()
+            assert len(filters) == 1, url
+            return 200, {}, json.dumps({"items": [
+                {"id": "1", "snippet": {"title": "Film & Animation", "assignable": True}},
+                {"id": "20", "snippet": {"title": "Gaming", "assignable": self.assignable}},
+                {"id": "22", "snippet": {"title": "People & Blogs", "assignable": True}}]}).encode()
         if url.startswith(f"{API}/videos?"):
             self.calls.append((method, url))
             ids = url.split("id=")[1].split("&")[0].split("%2C")
@@ -89,8 +98,13 @@ def test_gaming_category_is_checked_for_the_region(setup):
     consent = setup["store"].create("proj1", choices(setup["channel"]), setup["channel"],
                                     check(setup))
     assert consent["category_check"]["title"] == "Gaming" and consent["region_code"] == "IN"
-    assert any("videoCategories" in url and "regionCode=IN" in url
-               for _, url in setup["google"].calls)
+    assert any("videoCategories" in url and "regionCode=IN" in url and "id=" not in url
+               for _, url in setup["google"].calls), "one filter only (no id + regionCode)"
+
+
+def test_unknown_category_in_a_region_is_explained(setup):
+    with pytest.raises(ConsentError, match="does not exist in region IN"):
+        publish_consent.check_category(setup["data"], "99", "IN")
 
 
 def test_consented_clips_upload_with_the_chosen_settings_and_are_verified(setup):

@@ -95,13 +95,16 @@ class Gateway:
                          project_id)
 
     def generate(self, system_prompt, user_prompt, schema=None, data_kind=REAL, route=None,
-                 project_id=None):
+                 project_id=None, reasoning=None, max_output_tokens=None):
         tokens_in = (len(system_prompt) + len(user_prompt)) // 3 + 50
+        hints = {k: v for k, v in (("reasoning", reasoning),
+                                   ("max_output_tokens", max_output_tokens)) if v}
 
         def call(adapter, model):
-            return adapter.generate(model, system_prompt, user_prompt, schema=schema)
+            return adapter.generate(model, system_prompt, user_prompt, schema=schema, **hints)
         return self._run(GENERATE, route, data_kind, call,
-                         {"input_tokens": tokens_in, "output_tokens": 1024}, project_id)
+                         {"input_tokens": tokens_in,
+                          "output_tokens": int(max_output_tokens or 1024)}, project_id)
 
     def analyze_images(self, images, prompt, schema=None, system_prompt="You describe video "
                        "frames precisely.", data_kind=REAL, route=None, project_id=None):

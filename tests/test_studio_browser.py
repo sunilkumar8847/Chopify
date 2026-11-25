@@ -774,3 +774,24 @@ def test_discovery_search_attributes_youtube_and_add_never_downloads(browser, st
     assert not browser.api_requests("/api/batch") and not browser.api_requests("/api/record")
     assert [c[0] for c in client.calls] == ["search"]
     assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []
+
+
+# ------------------------------------------------------ story-based clip mode
+
+def test_clip_mode_setting_defaults_to_story_and_saves(browser, studio, tmp_path):
+    project_id, folder = _make_project(studio, tmp_path, clips=0)
+    open_studio(browser, studio)
+    browser.evaluate(f"selectProject({json.dumps(project_id)})")
+    browser.wait("document.querySelector('#settings-form').elements.clip_mode", timeout=15)
+    form = "document.querySelector('#settings-form')"
+    browser.wait(f"{form}.elements.clip_mode.value === 'story'", timeout=10)
+    labels = browser.evaluate(f"[...{form}.elements.clip_mode.options].map(o => o.textContent.trim())")
+    assert labels[0].startswith("Story-based") and labels[1].startswith("Automatic")
+    browser.evaluate(f"{form}.elements.clip_mode.value = 'auto';"
+                     f"{form}.querySelector('button[type=submit]').click()")
+    deadline = time.time() + 10
+    while projects.read_project(folder)["options"]["clip_mode"] != "auto" and time.time() < deadline:
+        browser.evaluate("1")
+        time.sleep(0.2)
+    assert projects.read_project(folder)["options"]["clip_mode"] == "auto"
+    assert not [c for c in browser.console if c["level"] == "error"] and browser.exceptions == []

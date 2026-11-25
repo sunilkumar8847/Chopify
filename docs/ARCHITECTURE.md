@@ -205,6 +205,19 @@ streams that are live. A Find clips job downloads inside the scheduler's
 analysis task, so it has the scheduler's progress, cancellation (the Job
 Object ends yt-dlp with the worker) and retries for network errors.
 
+## Story-based clip mode (2026-11-25)
+
+`projects._run_project` calls `story.select` instead of
+`score_clips.select` when `options["clip_mode"] == "story"` and an AI judge
+is available (otherwise automatic scoring runs and says why). `story.py`:
+sentences from word timestamps (long ones split at 20 s) -> overlapping
+~300 s parts -> one AI call per part (JSON, low reasoning on gpt-oss) with
+the running summary of earlier parts -> proposals validated and built on
+sentence boundaries (payoff kept, 15-120 s), dead-air penalty, scene labels
+recorded only (scene detection is still observation-only) -> de-duplication
+by overlap/text -> adaptive selection -> `segments.json` / `selection.json`
+(mode "story"). `story_cache.json` caches answers per part's own text.
+
 ## Output-language policy (Roman Hinglish)
 
 Whisper's original transcript (`transcript.json`) is kept unchanged for

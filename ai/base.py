@@ -229,5 +229,5 @@ class Provider:
     def transcribe(self, path, model_id, language=None, word_timestamps=True, offset=0.0):
         raise Unsupported(f"{self.title} does not transcribe audio.", self.name)
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         raise Unsupported(f"{self.title} does not generate text.", self.name)

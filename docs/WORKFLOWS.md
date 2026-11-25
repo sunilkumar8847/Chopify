@@ -32,6 +32,19 @@ live session is refused, because a live stream cannot wait. Only one clip
 renders at a time (Dashboard setting: up to two). If Studio stops, queued and
 interrupted work continues by itself after the next start.
 
+## Story-based clips (default for new projects)
+
+Project settings > **How clips are found**: *Story-based* (default for new
+projects) or *Automatic score* (older projects keep this). Story-based reads
+the whole transcript with the AI judge (your AI route, Groq by default) and
+picks complete stories - a hook, enough context, a build-up and the payoff -
+instead of single loud moments. It keeps the best stories relative to the
+video (never below 5/10) instead of a fixed minimum, removes overlaps and
+keeps every clip 15-120 s. A 30-minute video takes about 3-4 minutes on
+Groq Free and uses about 40,000 of the 200,000 tokens Groq Free allows per
+day for gpt-oss-20b; selecting again is free (cached). To use it on an
+existing project, choose Story-based in its settings and press Find clips.
+
 ## Live sessions from OBS
 
 1. In OBS: Settings > Output > Recording: format **MKV** (or FLV/TS or

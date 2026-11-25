@@ -61,7 +61,7 @@ class LocalProvider(Provider):
                       audio_seconds=duration, free=True)
         return Transcription(segments, detected, duration, 1.0, usage)
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         import llm
         if images:
             from ai.base import Unsupported

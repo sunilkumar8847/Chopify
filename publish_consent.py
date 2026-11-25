@@ -57,10 +57,14 @@ def render_template(template, values):
 
 
 def check_category(data_client, category_id, region):
-    """Is the category assignable in this region? Asks videoCategories.list."""
-    data = data_client._get("videoCategories", {"part": "snippet", "id": category_id,
-                                                "regionCode": region})
-    items = data.get("items") or []
+    """Is the category assignable in this region? Asks videoCategories.list.
+
+    videoCategories.list takes exactly one filter - ``id`` OR ``regionCode``
+    (sending both is HTTP 400 incompatibleParameters) - so this lists the
+    region's categories and looks for the one we need.
+    """
+    data = data_client._get("videoCategories", {"part": "snippet", "regionCode": region})
+    items = [i for i in data.get("items") or [] if str(i.get("id")) == str(category_id)]
     if not items:
         raise ConsentError(f"Category {category_id} does not exist in region {region}.")
     snippet = items[0].get("snippet") or {}

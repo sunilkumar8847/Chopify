@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Story-based clip mode; Auto-publish category fix; caption fix
+- `story.py`: clip mode "story" (default for new projects; "auto" scoring
+  kept and still used by existing projects). The AI judge reads the whole
+  transcript in ~5-minute parts with a running "story so far", proposes
+  complete stories (hook, context, middle, payoff, coherence, engagement
+  0-10); Chopify validates them against sentence timestamps, keeps clips
+  15-120 s without cutting the payoff, penalises dead air, removes
+  overlapping/duplicate stories and selects adaptively (floor 5.0, within
+  2.5 of the best, length-based cap). Judgements are cached per part.
+  Studio: "How clips are found" in project settings.
+- Gateway/Groq: optional `reasoning` and `max_output_tokens` hints; story
+  mode asks gpt-oss for low reasoning (default reasoning left long JSON
+  answers empty - HTTP 400 "Failed to validate JSON").
+- Fix: Auto-publish consent failed with HTTP 400 incompatibleParameters
+  (videoCategories.list was sent `id` and `regionCode`; it accepts one).
+  The region's categories are listed and category 20 is checked there.
+- Fix: styled YouTube caption tracks doubled every word (each event comes
+  once per pen); duplicates are skipped. `SUBTITLE_VERSION` 2 rebuilds
+  caption transcripts on the next Find clips.
+
 ### YouTube downloading enabled (owner's decision, 2026-11-25)
 - The Phase 0 YouTube download switch is removed (`CHOPIFY_YOUTUBE_DOWNLOADS`,
   `features.json` `youtube_downloads`, `compliance.require/blocked`). Find

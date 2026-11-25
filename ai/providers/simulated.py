@@ -74,7 +74,7 @@ class SimulatedProvider(Provider):
                       audio_seconds=duration, cost_usd=0.0, free=True)
         return Transcription(segments, "en", duration, 1.0, usage)
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         started = time.time()
         time.sleep(latency())
         digest = int(hashlib.sha256((user or "").encode("utf-8")).hexdigest(), 16)

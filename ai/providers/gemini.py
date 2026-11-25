@@ -61,7 +61,7 @@ class GeminiProvider(Provider):
         return {"ok": len(missing) < len(self.models),
                 "detail": "models listed" if not missing else f"not listed: {', '.join(missing)}"}
 
-    def generate(self, model_id, system, user, schema=None, images=None):
+    def generate(self, model_id, system, user, schema=None, images=None, **hints):
         self.model(model_id)
         parts = [{"text": user}] + [
             {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(img).decode()}}

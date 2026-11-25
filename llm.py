@@ -173,12 +173,14 @@ class GatewayProvider(Provider):
         from ai import gateway
         return gateway.get().precheck("generate", self.model or None)
 
-    def chat_json(self, system, user, schema=None):
+    accepts_hints = True                    # reasoning / max_output_tokens
+
+    def chat_json(self, system, user, schema=None, **hints):
         from ai import gateway
         from ai.base import AIError
         try:
             result = gateway.get().generate(system, user, schema=schema or {"type": "object"},
-                                            route=self.model or None)
+                                            route=self.model or None, **hints)
         except AIError as exc:
             raise LLMError(str(exc)) from exc
         if result.data is None:

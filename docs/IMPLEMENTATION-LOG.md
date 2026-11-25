@@ -89,3 +89,16 @@ transcribed (350 words); NASA ISS live stream ingested as a live session
 ignored the AI routes; API Find clips defaulted to 16:9; YouTube live needs
 separate video+audio HLS inputs. Tests encoding "downloads blocked" were
 rewritten for the new requirement.
+
+## Story mode, consent fix, caption fix (2026-11-25)
+GTA 6 project (91d70d8bcb85, 30 min) had 0 clips: its caption transcript
+had every word twice (styled caption track), and the fixed 8.0 minimum
+rejected all 28 candidates (1.7-7.1). On a copy (real project read only):
+13 distinct stories, scores 7.28-9.52, adaptive threshold 7.02, 4 selected
+and rendered (1080x1920, 32.7-119.3 s, decode clean). Groq problems found
+and fixed on the way: strict/plain JSON answers empty without low reasoning;
+gpt-oss wrote sentence numbers into score fields (renamed *_score, out of
+range rejected); cache keys depended on earlier parts. Groq free TPD for
+gpt-oss-20b is 200,000 tokens; a 30-minute story pass uses ~40,000.
+Auto-publish: real videoCategories.list (regionCode=IN) returned Gaming as
+assignable after the fix.

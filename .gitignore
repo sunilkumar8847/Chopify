@@ -1,42 +1,125 @@
-# local environment & large artifacts -- never commit
-.venv/
-venv/
-whisper.cpp/
-whisper_old/
-work/
-build_msvc*/
-__pycache__/
-*.pyc
-*.onnx
-*.log
-*.sh
-!install.sh
-
-# OAuth secrets and tokens - never commit (Chopify keeps its own copies,
-# encrypted, in %APPDATA%\Chopify or $CHOPIFY_CONFIG)
-client_secret*.json
-*token*.json
-youtube_*.bin
-upload_usage.json
-upload_settings.json
-
-# chopify outputs
-clips/
-models/
-projects/
-logs/
-_site/
-.pytest_cache/
-
-# local AI agent state
-.mimosa/
-.zcode/
-
-# Secrets and local environment (any folder depth)
+# ---------------------------------------------------------------------------
+# Secrets, credentials and local environment - never commit
+# (Chopify keeps OAuth tokens and its own settings encrypted or in
+#  %APPDATA%\Chopify / $CHOPIFY_CONFIG, outside the repository.)
+# ---------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
-
-# Other local secret files
+*.env.local
 ai_keys.bin
+youtube_*.bin
 *.bin.*.tmp
+client_secret*.json
+credentials*.json
+service-account*.json
+*token*.json
+*.pem
+*.key
+*.p12
+*.pfx
+# local Chopify settings/state if a config folder ever points here
+upload_usage.json
+upload_settings.json
+uploads.json
+publish_consents.json
+ai_settings.json
+features.json
+scheduler.json
+discovery.json
+ai_slots/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Python environments and caches
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Chopify outputs, user data and generated media (local only)
+# ---------------------------------------------------------------------------
+projects/
+clips/
+previews/
+work/
+logs/
+_site/
+_bench/
+_phase*/
+*.log
+*.jsonl
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.opus
+*.aac
+*.srt
+*.ass
+# downloads and temporary files
+*.part
+*.part-Frag*
+*.ytdl
+*.tmp
+*.temp
+download-*/
+.ai-pieces-*/
+_partial-*
+
+# ---------------------------------------------------------------------------
+# AI models and large local-only artifacts
+# ---------------------------------------------------------------------------
+models/
+*.onnx
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+whisper.cpp/
+whisper_old/
+build_msvc*/
+
+# ---------------------------------------------------------------------------
+# Shell scripts (local helpers); the installer is part of the project
+# ---------------------------------------------------------------------------
+*.sh
+!install.sh
+
+# ---------------------------------------------------------------------------
+# Local agent state, editors and operating-system files
+# ---------------------------------------------------------------------------
+.mimosa/
+.zcode/
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini

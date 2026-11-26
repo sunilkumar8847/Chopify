@@ -1,324 +1,428 @@
-<p align="center"><img src="assets/banner.svg" alt="Chopify — local video clipping and captions" width="880"></p>
+<p align="center">
+  <img src="assets/banner.svg" alt="Chopify" width="720">
+</p>
 
 # Chopify
 
-**Turn long videos into scored, captioned shorts — locally, free, with no uploads or watermarks.**
+**Chopify turns long gaming and entertainment videos and live streams into
+ready-to-post YouTube Shorts.** It transcribes the footage, finds complete,
+story-driven moments with AI, frames them for vertical video, burns in
+animated captions, and can publish them to your YouTube channel - with your
+explicit consent for every setting.
 
-<p align="center">
-  <img src="assets/demo.gif" alt="A Chopify clip with word-by-word burned-in captions" width="720">
-</p>
+Everything runs from **Chopify Studio**, a local web app on your own
+computer. AI work goes through a provider-independent gateway: **Groq**
+(free plan) in the cloud, or **local models** (faster-whisper and Ollama)
+when you prefer to keep everything offline.
 
-<p align="center">
-  <a href="#install-in-one-command"><b>Install</b></a> ·
-  <a href="https://mehbul.github.io/chopify/"><b>Live tour</b></a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="LICENSE">MIT License</a>
-</p>
+---
 
-<p align="center">
-  <a href="https://github.com/mehbul/chopify/actions/workflows/ci.yml"><img src="https://github.com/mehbul/chopify/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
-</p>
+## Contents
 
-Chopify is an open-source Python app with a local browser dashboard and a CLI. Import a recording or a video URL, find moments, correct captions, review drafts, and export MP4 clips with SRT subtitles. No subscription, API key, cloud upload, or watermark. The [live site](https://mehbul.github.io/chopify/) is a product tour; the app itself runs on your computer.
+- [What it does](#what-it-does)
+- [Key features](#key-features)
+- [How it works](#how-it-works)
+- [Tech stack and project layout](#tech-stack-and-project-layout)
+- [Installation (Windows)](#installation-windows)
+- [Configuration](#configuration)
+- [YouTube setup (Data API v3)](#youtube-setup-data-api-v3)
+- [Using Chopify](#using-chopify)
+- [Command line](#command-line)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Credits and license](#credits-and-license)
 
-[Workflow guide](docs/WORKFLOWS.md) · [CLI reference](docs/CLI.md) · [Agent/API reference](docs/AGENT-API.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Changelog](CHANGELOG.md)
+---
 
-## What can Chopify do?
+## What it does
 
-| Feature | How it helps |
-| --- | --- |
-| **Local browser dashboard** | Queue videos, watch job progress, review candidates, edit words and timestamps, and download exports. |
-| **Automation dashboard** | One view of every project's stages (source, transcription, discovery, selection, render, upload), with pause/resume, retry and cancel, failure explanations with what to do, an activity log, and recovery after a restart. See [Automation](docs/AUTOMATION.md). |
-| **Channel monitoring (optional)** | New videos on channels you choose become projects and live streams are recorded, within a daily limit. Nothing is ever published automatically. |
-| **Hinglish captions and metadata** | Hindi speech is captioned in natural Roman-script Hinglish ("aaj maine pehli baar GTA 6 khela"), never Devanagari; English stays English. Word timestamps are kept, so burned-in captions and SRT stay in sync. |
-| **Local video input** | Use MP4, MOV, MKV, WebM, M4V, or AVI recordings directly, or download a yt-dlp-supported URL. |
-| **Any-length sources** | Podcasts, movies, streams, and gameplay VODs work without a duration setting. Long sources switch to a resumable audio-first path automatically. |
-| **Audio and visual discovery** | A local 1 Hz audio timeline boosts reactions, laughs, impacts, and gameplay events, while cached 2 fps visual analysis catches motion spikes, scene/UI changes, faces, and action arcs. Speech-sparse and action-only sources can still produce clips. |
-| **Resumable projects** | Reuse matching downloads, transcripts, and completed renders. Retry a failed job without discarding successful clips. |
-| **Batch queue** | Add one source per line in Studio or use a JSON list in the CLI. Each video has an isolated project folder; a video that already has a project is skipped. |
-| **Caption Studio** | Choose from 13 caption looks, then tune font, size, colors, outline, shadow, cue length, position, box background, and word motion. A live overlay follows the source; automatic emphasis and emoji are optional. |
-| **Caption editor and SRT export** | Fix transcription mistakes before rendering. Burnt captions and SRT files share the same timeline, including tightened cuts. |
-| **Reusable brand presets** | Save a caption look and optional logo in JSON. A named preset, brand preset, and project override layer in that order. |
-| **Semantic clip search** | Search for a concept such as “handling rejection” using optional local Ollama embeddings, even if those exact words are absent. |
-| **Podcast split-screen** | Stack two adjustable horizontal crops in a vertical clip for fixed-camera two-person footage. |
-| **Clip selection and review** | Absolute 0–10 scoring returns every clip at 8.0+ by default, with an engine-chosen length, optional local LLM reranking, keyword or semantic search, editable times, and fast draft previews. |
-| **Social video exports** | 16:9, 9:16, or 1:1; H.264 video, AAC when source audio exists; SRT, poster, title/description/hashtag JSON. |
-| **Face tracking and cleanup** | Single-frame vertical crops follow a detected face; optional filler/silence removal and audio loudness normalization. |
+| You give it | Chopify gives you |
+|---|---|
+| A local recording, a YouTube link (video, Shorts or live) or a direct media URL | Transcript, scored story candidates to review, and rendered 9:16 Shorts with captions |
+| Up to five live sources at once (OBS output folders, SRT feeds, direct streams, YouTube live) | A rolling buffer of each stream and clips cut automatically while the stream continues |
+| A game or keyword | YouTube search results and the most-popular Gaming chart, with links and a watch list |
+| Your consent and publishing choices | Clips uploaded to your channel with your visibility, category and template choices |
 
-Clip selection favors sentence endings with punctuation. Scores are editing suggestions, **not predictions or guarantees of virality**. Review the results before publishing.
+## Key features
 
-## Install in one command
+### Clip finding
+- **Story-based clipping** (default for new projects): the AI judge reads the
+  whole transcript in order, with a running "story so far", and proposes
+  complete stories - a hook, enough context, a build-up and the payoff.
+  Candidates are scored for hook, context, middle, payoff, coherence and
+  engagement; overlaps and duplicates are removed.
+- **Adaptive selection**: instead of one fixed score threshold, Chopify keeps
+  the best stories relative to the video (never below a quality floor), up to
+  a sensible number of clips for its length.
+- **Automatic score mode** is still available: scored windows from speech,
+  audio energy and visual evidence, judged by the AI and filtered by a
+  minimum score.
+- **Dynamic auto-duration**: clip boundaries snap to whole sentences, add the
+  setup or payoff a moment needs, trim dead air at the edges and respect the
+  Shorts limit (15-120 seconds).
+- **Gameplay scene detection** (observation mode): labels gameplay, starting
+  soon, menus, loading, BRB and outro screens with motion, audio and OCR cues,
+  and shows the label on each candidate. It does not discard footage yet -
+  that waits for an accuracy evaluation on real labelled recordings
+  (`scene_eval.py`).
 
-**Windows** (PowerShell):
+### Live streams
+- **Live sessions** from an **OBS output folder** (Chopify follows the
+  growing recording), **SRT** (listener or caller), **direct HLS/RTMP/HTTP
+  feeds** or a **YouTube live stream**.
+- Six-second segments in a **bounded ring buffer** (30 minutes by default),
+  with **pins** that keep possible clips until they are rendered.
+- **Continuous live clipping**: loud moments are detected against each
+  stream's own baseline, judged by the AI once the payoff has been recorded,
+  refined to whole sentences and rendered as Shorts while ingestion keeps
+  running.
+- Reconnects with backoff, a disk watchdog, and automatic resume after a
+  restart.
 
-```powershell
-irm https://raw.githubusercontent.com/mehbul/chopify/main/install.ps1 | iex
+### Processing and reliability
+- **Five-source scheduler**: up to five sources (live and recorded together)
+  run at once; a sixth video waits in a queue, a sixth live session is
+  refused with a reason. Separate worker pools for ingestion, analysis, AI and
+  rendering, so a slow AI provider never blocks recording.
+- **Persistent queue** (SQLite) with leases: interrupted work resumes once
+  after a restart; worker processes end with Studio (Windows Job Object).
+- **Safe cancellation**: cancelling stops the running step; clips already
+  made are kept. Interrupted renders never leave a broken file that looks
+  like a finished clip.
+- Disk and memory floors pause heavy work instead of failing.
+
+### AI
+- **AI Gateway** for transcription, text/JSON and vision with interchangeable
+  providers: **Groq** (Whisper large-v3 turbo and GPT-OSS models),
+  **local** faster-whisper and **Ollama** (Qwen2.5 3B by default), plus
+  OpenRouter, Gemini and NVIDIA adapters with strict privacy rules.
+- **Free-only by default**: paid calls are off, budgets are $0, unknown
+  prices count as paid, and there is no automatic switch to a paid provider.
+- Rate limits are respected (Groq's own response headers); when a quota runs
+  out, work pauses and is retried later instead of failing silently.
+- Usage ledger in Studio: requests, audio minutes, tokens and cost per model.
+
+### Captions and output
+- Vertical 1080x1920 Shorts (also 16:9 and 1:1), face-aware framing,
+  loudness normalization, silence tightening.
+- Animated burned-in captions with 14 caption styles, a Caption Studio for
+  fonts, colours, position and word motion, reusable brand presets and SRT
+  export.
+- Hindi and Hinglish speech is captioned in Roman script.
+
+### YouTube
+- **YouTube links** (watch, `youtu.be`, Shorts, live) are downloaded with
+  yt-dlp and processed like any other source.
+- **Gaming discovery** with the official YouTube Data API: search a game or
+  keyword (optionally live only, by relevance, date or views) or open
+  YouTube's most-popular Gaming chart for your region. Results open on
+  YouTube; "Add to list" keeps the link only; duplicate results are removed
+  and videos you already have a project for are marked.
+- **Publishing** through the YouTube Data API v3 resumable upload: drafts
+  with AI-written titles and descriptions, an approval step, a daily limit,
+  quota tracking and duplicate-upload prevention. New uploads are private
+  unless you choose otherwise.
+- **Consent-based auto-publish** per project or live session: you choose the
+  channel, visibility (no default; public needs an extra confirmation), the
+  made-for-kids declaration, region (Gaming category checked for it), title
+  and description templates, a daily limit and a minimum score. Every upload
+  is verified afterwards; consent can be withdrawn at any time.
+
+### Projects and storage
+- **Readable project names** taken from the video title or file name, with
+  **rename**.
+- **Three-dot project menu**: rename, open the project folder, view its
+  storage, delete.
+- **Safe deletion**: delete a project while keeping its final clips, or
+  delete the clips too after typing their number. Links (junctions and
+  symlinks) are never followed, and projects with uploads in progress are
+  protected.
+- **Storage management**: after verified uploads, supporting files
+  (source media, transcripts, caches) can be cleaned up; final clips are never
+  deleted automatically.
+
+### Studio
+- A local, non-blocking web UI: background jobs with live progress, in-app
+  dialogs and notifications, a dashboard for live sessions, discovery, AI
+  settings, storage and the upload queue.
+
+## How it works
+
+```
+source (file, YouTube link, OBS/SRT/live feed)
+   │
+   ├─ ingest ......... download or follow the source; live: 6 s segments in a ring buffer
+   ├─ transcribe ..... YouTube captions when available, otherwise Whisper
+   │                   (Groq Whisper large-v3 turbo or local faster-whisper)
+   ├─ analyse ........ audio and visual evidence, scene labels (observation)
+   ├─ find clips ..... Story mode: AI reads the transcript in parts -> complete stories
+   │                   Automatic mode: scored windows + AI judge + minimum score
+   ├─ refine ......... sentence-aligned boundaries, setup/payoff, 15-120 s
+   ├─ render ......... 9:16 framing, captions, loudness -> MP4 + SRT + poster
+   └─ publish ........ approval or consent -> resumable upload -> verification
 ```
 
-**macOS / Linux:**
+The **scheduler** runs these steps for up to five sources at a time, with
+separate pools for ingestion, analysis, AI and rendering. The **AI Gateway**
+decides which provider handles each request and enforces privacy and
+spending rules before anything is sent.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/mehbul/chopify/main/install.sh | bash
+## Tech stack and project layout
+
+- **Python 3.11+** (tested on 3.12), standard-library HTTP server for Studio,
+  vanilla JavaScript front end
+- **FFmpeg / ffprobe** for media, **yt-dlp** (with Node.js) for YouTube
+- **faster-whisper**, **Ollama** (optional, local), **Groq** (optional, cloud)
+- **OpenCV / NumPy** for visual analysis, **RapidOCR** for scene text
+- **SQLite** for the scheduler, live segment indexes and the AI usage ledger
+
+```
+dashboard.py          Chopify Studio (local web app and HTTP API)
+chopify.py            command-line interface
+projects.py           project pipeline (transcribe -> find clips -> render)
+scheduler.py          five-source persistent scheduler
+story.py              story-based clip selection
+score_clips.py        automatic scoring mode
+highlights.py         AI judging of clip candidates
+boundaries.py         sentence-aligned clip boundaries
+render_clips.py       rendering, framing and captions
+live_ingest.py        live sessions and ring buffers
+live_clipper.py       continuous live clipping
+scenes.py             gameplay scene classification (observation mode)
+discovery.py          YouTube gaming discovery (Data API)
+youtube_upload.py     upload queue
+publish_consent.py    consent-based auto-publish
+project_admin.py      titles, rename and safe deletion
+storage.py            storage overview and cleanup
+ai/                   AI Gateway, policy, usage ledger and providers
+assets/studio/        Studio front end (HTML, CSS, JavaScript)
+docs/                 detailed documentation
+tests/                automated tests (unit, integration and browser)
+tools/                test harnesses and helper scripts
 ```
 
-The installer checks Git, Python 3.11+, and ffmpeg, installs anything missing when a package manager is available, clones Chopify into `./chopify`, creates `.venv`, installs the Python dependencies, and opens Studio at **http://127.0.0.1:8765**. Set `CHOPIFY_NO_START=1` to install only, or `CHOPIFY_DIR=/path` to choose the folder.
+## Installation (Windows)
 
-Prefer to inspect before running? [install.ps1](install.ps1) and [install.sh](install.sh) are short and commented.
+### 1. Prerequisites
 
-<details>
-<summary><b>Manual install</b></summary>
+- **Python 3.11 or newer** (3.12 recommended) - <https://www.python.org/downloads/>
+  (tick "Add python.exe to PATH")
+- **Git** - <https://git-scm.com/download/win>
+- **FFmpeg** on your PATH, for example:
+  ```powershell
+  winget install --id Gyan.FFmpeg
+  ```
+- **Node.js** (used by yt-dlp to read YouTube) - <https://nodejs.org/>
+- Optional: an **NVIDIA GPU** with CUDA for faster local Whisper
+- Optional: **Ollama** for local AI judging - <https://ollama.com/>
 
-Windows is the primary target. Use **Python 3.11+** and **ffmpeg/ffprobe with libx264, AAC, and subtitle rendering support**. Linux CI also checks the Python and ffmpeg workflows.
+### 2. Get the code and create a virtual environment
 
 ```powershell
-git clone https://github.com/mehbul/chopify.git
+git clone <your-repository-url> chopify
 cd chopify
-winget install Gyan.FFmpeg
-python -m venv .venv
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt
+```
+
+For running the tests as well: `.venv\Scripts\python -m pip install -r requirements-dev.txt`.
+
+## Configuration
+
+### `.env` (API keys and spending limits)
+
+Copy the template and fill in what you use:
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+```dotenv
+GROQ_API_KEY=            # https://console.groq.com/keys - free plan is enough
+OPENROUTER_API_KEY=      # optional
+GEMINI_API_KEY=          # optional (free tier: synthetic test data only)
+NVIDIA_API_KEY=          # optional (trial: synthetic test data only)
+CHOPIFY_YOUTUBE_API_KEY= # optional, public Data API lookups without signing in
+
+CHOPIFY_AI_FREE_ONLY=true
+CHOPIFY_AI_ALLOW_PAID=false
+CHOPIFY_AI_DAILY_BUDGET_USD=0
+CHOPIFY_AI_MONTHLY_BUDGET_USD=0
+CHOPIFY_AI_LOCAL_FALLBACK=false
+CHOPIFY_GROQ_PLAN=free
+```
+
+- `.env` is ignored by Git - never commit it. Studio only ever shows the last
+  four characters of a key.
+- Restart Studio after editing `.env`.
+- A Windows environment variable with the same name overrides `.env`.
+
+### Groq (recommended cloud AI)
+
+1. Create a free key at <https://console.groq.com/keys> and put it in
+   `GROQ_API_KEY`.
+2. Optional but recommended: turn on **Zero Data Retention** in Groq Console
+   (Settings > Data Controls), then confirm it in Studio's **AI** panel - real
+   recordings are only sent to Groq after that confirmation.
+3. In Studio's **AI** panel, enable Groq and choose the routes, for example
+   transcription `whisper-large-v3-turbo` and text `openai/gpt-oss-20b`.
+   New projects use these routes.
+
+Groq's free plan has daily limits (for `gpt-oss-20b`, 200,000 tokens per
+day; a story pass over a 30-minute video uses about 40,000). When a limit is
+reached, Chopify pauses that work and tells you; it never switches to a paid
+service.
+
+### Ollama (local AI, optional)
+
+```powershell
+ollama pull qwen2.5:3b
+```
+
+Chopify talks to Ollama at `http://127.0.0.1:11434` (override with
+`CHOPIFY_OLLAMA_HOST`). Choose the local route in the **AI** panel, or keep it
+as an explicit fallback for outages (`CHOPIFY_AI_LOCAL_FALLBACK=true`).
+Local Whisper models are downloaded by faster-whisper on first use.
+
+## YouTube setup (Data API v3)
+
+Publishing and discovery need your own Google Cloud OAuth client (Chopify
+does not ship one).
+
+1. Open <https://console.cloud.google.com/> and create a project.
+2. **APIs & Services → Library**: enable **YouTube Data API v3**.
+3. **APIs & Services → OAuth consent screen**: choose *External*, fill in the
+   app name and your email, and add yourself under **Test users**.
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   application type **Desktop app**. Download the JSON file
+   (`client_secret_....json`). Keep it private - it is ignored by Git.
+5. In Studio, open a project's **YouTube** panel, enter the path of that file
+   and press **Add client file**, then **Connect YouTube channel** and sign in
+   with the account that owns the channel.
+
+Or from the command line:
+
+```powershell
+.venv\Scripts\python youtube_auth.py client path\to\client_secret_XXXX.json
+.venv\Scripts\python youtube_auth.py connect
+.venv\Scripts\python youtube_auth.py status
+```
+
+Chopify requests the `youtube.upload` and `youtube.readonly` scopes. The OAuth
+client and tokens are stored encrypted (Windows DPAPI) in
+`%APPDATA%\Chopify`, never in the repository. While the consent screen is in
+*Testing* mode, Google expires the sign-in after 7 days and Studio asks you to
+connect again. See [docs/YOUTUBE.md](docs/YOUTUBE.md) for quotas and limits.
+
+## Using Chopify
+
+### Start Studio
+
+```powershell
 .venv\Scripts\python dashboard.py
 ```
 
-</details>
+Studio opens at <http://127.0.0.1:8765> (`--port` to change it,
+`--no-browser` to skip opening a browser). Stop it with **Ctrl+C**.
 
-Studio opens at **http://127.0.0.1:8765**. Paste a local video path or URL, then click **Find clips**. Add multiple sources on separate lines to queue them. After processing, review candidates, edit captions, style them in the **Captions** tab, save your settings, and export selected clips. Stop the server with Ctrl+C. To change the port:
+### Clip a video
 
-```powershell
-.venv\Scripts\python dashboard.py --port 8766 --projects-dir projects
-```
+1. Paste one or more local file paths or links (YouTube watch, `youtu.be`,
+   Shorts or a direct media URL) into the source box - one per line - and
+   press **Find clips**. **Check source** tells you first whether a link is a
+   normal video, a live stream or an upcoming stream.
+2. Chopify transcribes the video and finds story candidates. Review them:
+   watch each one, edit titles, times and captions, or pick a different
+   caption style.
+3. Press **Export** to render the selected clips as Shorts (MP4 + SRT +
+   poster) into the project's `clips` folder.
 
-The dashboard has no extra web framework or JavaScript installation step. It binds to loopback and is intended for one trusted user on the same computer, not as a public server.
+Project settings > **How clips are found** switches between **Story-based**
+(default for new projects) and **Automatic score**.
 
-YouTube downloads may also require Deno: `winget install DenoLand.Deno`. A preflight check reports missing Python packages and encoders. Restart your terminal after installing tools so PATH changes take effect.
+### Run live sessions
 
-## CLI: long video to short clips
+1. In OBS, record to **MKV** (or FLV/TS) into a folder of its own; use one
+   folder per OBS instance.
+2. Studio > **Dashboard > Live sessions**: choose **OBS output folder** and the
+   folder (or **SRT** with `srt://0.0.0.0:9000?mode=listener`, or a **direct
+   media URL / YouTube live link**), give it a name and press **Start live
+   session**. Up to five sources run at once.
+3. Candidates and their state (waiting for payoff, AI queued, rendering, done)
+   appear in the panel; clips land in the session's `clips` folder.
 
-After installing dependencies, run with the virtual environment's Python (or activate it and use `python`):
+### Discover gaming videos
 
-```powershell
-# Print version (works with no video, ffmpeg, or network)
-python chopify.py --version
+Studio > **Dashboard > Discover gaming videos**: type a game (for example
+"GTA 6"), optionally tick **Live now**, choose the order and your region, and
+press **Search YouTube** - or **Popular gaming** for YouTube's chart. **Add to
+list** saves the link to your watch list.
 
-# List caption style presets (works the same way)
-python chopify.py --list-styles
+### Publish to YouTube
 
-# Local recording or online video
-python chopify.py "C:\Videos\podcast.mp4" --aspect 9:16
-python chopify.py "https://youtube.com/watch?v=VIDEO_ID"
+- **One clip at a time**: on an exported clip press **Publish…**, review the
+  drafted title and description, then **Upload to YouTube…** and confirm.
+- **Automatically**: in a project, press **Auto-publish…**, make every choice
+  (channel, visibility, made for kids, region, templates, daily limit,
+  minimum score), preview the templates and tick the consent box. Finished
+  clips of that project or live session are then uploaded with those
+  settings. **Turn off auto-publish** withdraws anything not yet uploading.
 
-# Prepare once, inspect candidates, then render selected clips
-python chopify.py "C:\Videos\podcast.mp4" --workdir work --action prepare
-python chopify.py --project work --action render --clips 1,3 --preview
-python chopify.py --project work --action render --clips 1,3
+### Manage projects and storage
 
-# Search the transcript using keywords or meaning
-python chopify.py "recording.mp4" --search "pricing"
-python chopify.py "recording.mp4" --semantic "advice about handling rejection"
+Use the **⋯** menu next to a project to rename it, open its folder, view its
+storage or delete it. The **Storage** panel on the Dashboard shows disk use
+and cleans up supporting files of projects whose clips are uploaded and
+verified - final clips stay.
 
-# Brand and podcast framing
-python chopify.py "podcast.mp4" --brand examples/brand.json --tighten --loudnorm
-python chopify.py "podcast.mp4" --aspect 9:16 --layout split --centers 0.25 0.75
-
-# Caption Studio from the CLI
-python chopify.py "recording.mp4" --style bold --words-per-cue 2 --caption-position top --emoji --emphasis
-python chopify.py "recording.mp4" --caption-json my-caption-style.json
-
-# Process a queue of videos into separate projects
-python chopify.py --batch examples/batch.json --projects-dir projects
-```
-
-CLI single-video runs save state under `work/` and copy the latest exports to `clips/`. Set `--out DIR` or `CHOPIFY_OUT` to change the export folder. Dashboard and batch jobs save outputs inside `projects/<id>/clips/` and drafts inside `previews/`. **Replace the batch sample's sources with your own paths or URLs.**
-
-Successful stages resume by default. Use `--no-resume` to reprocess, or `--project projects/<id> --action render` to retry a batch project. Use `--action render` after manual caption/clip edits; `--action prepare` recalculates candidates when selection inputs change. A failed batch job does not prevent later videos from processing; the CLI exits nonzero if any job fails.
-
-## How clips are chosen
-
-Chopify evaluates every sentence as a possible start, builds overlapping
-candidate windows, and keeps the best natural endpoint for each start. The
-duration is chosen by the engine from a ladder that runs from 15 seconds to five
-minutes, so a strong moment is not forced into a fixed length.
-
-- The default minimum score is **8.0 on an absolute 0–10 scale**. A clip at
-  exactly 8.0 passes and is shown as **8.0+**.
-- Every passing clip is returned by default. Use `--max-clips N` only when you
-  want a safety cap.
-- `--preferred-len` is a soft preference, not a hard cut. The engine can pick a
-  shorter or longer natural ending when it scores better.
-- The default clip range is **15–300 seconds** (`--min-len` / `--max-len`).
-- Interactive runs ask for the minimum score and preferred length once. Pass
-  `--min-score` or `--preferred-len` to skip either question, or `--no-input` to
-  skip both for scripts and CI.
-- Zero passing clips is a real result. Chopify writes an empty selection, reports
-  the candidate score range, and does not invent a fallback clip.
+## Command line
 
 ```powershell
-# Accept only stronger clips, prefer 45-second cuts, and never prompt
-python chopify.py "recording.mp4" --min-score 8.5 --preferred-len 45s --no-input
+# clip a local file (or a YouTube link) into ./clips
+.venv\Scripts\python chopify.py path\to\video.mp4 --aspect 9:16
 
-# Interactive --action all prepares first, shows the range, and confirms
-# before rendering more than ten clips.
-python chopify.py "podcast.mp4" --action all
+# all options
+.venv\Scripts\python chopify.py --help
 ```
 
-`--explain` prints each candidate's score parts and reason. Prepare writes
-`candidates.json` (everything discovered) and `selection.json` (threshold and
-range diagnostics); `segments.json` stays the editable render contract used by
-the CLI and Studio.
+See [docs/CLI.md](docs/CLI.md) for every flag.
 
-### Audio and visual evidence for sparse sources
-
-Clip discovery also listens to and watches the source. A single local ffmpeg
-pass builds a 1 Hz audio timeline (loudness, peaks, spectral flux, and
-transients), caches it as `audio_features.npz` beside the transcript, and reuses
-it on later prepares. Only candidate ranges are scored against that timeline; no
-audio is uploaded.
-
-The engine derives an internal profile (`talk`, `mixed`, or `gameplay/action`)
-from speech density, audio variation, and visual activity. The profile changes
-duration tie-breaks, evidence weights, and evidence floors. It never changes your
-minimum score.
-
-- Speech-sparse clips use a 7.0 text floor and stronger evidence weighting. This
-  covers gameplay, streams, and videos with little commentary.
-- A source with no transcript words uses detected audio peaks as event seeds,
-  with evenly spaced action seeds as a fallback when the track varies without a
-  sharp peak. Hooks say `event at 42s`, never a guessed semantic event.
-- A source with no words, no audio signal, and a varying picture uses evenly
-  spaced visual seeds and is scored from visual evidence alone.
-- A flat source with no words and no usable audio or visual evidence fails with
-  `No speech and no media evidence; this source cannot be scored.`
-- Missing or unreadable video files still fall back to transcript-only scoring,
-  so existing projects keep working.
-
-### Visual evidence and silent gameplay
-
-Visual evidence runs locally. A cached ffmpeg decode samples 2 frames per
-second at 160x90, and OpenCV measures motion, scene and UI changes, face
-presence, event arcs, and boundary quiet. Only the sparse baseline samples (up
-to 12 five-second windows) and shortlisted padded candidate ranges are decoded;
-results are cached by source identity and range under `visual_sections/`. The
-whole-source baseline is cached as `visual_baseline.json`. No frames are
-uploaded, and later prepares reuse the cache.
-
-- Visual scoring rewards a motion spike, a scene or UI change, a visible
-  facecam, a complete action arc, and quiet boundaries.
-- A window whose action arc stays below 0.30 is capped at 6.0, so a static
-  screen cannot pass on motion noise alone.
-- Facecam stays neutral when the source has no consistent face region.
-- Spoken clips keep sentence boundaries. For wordless clips, each boundary can
-  move up to 1.5 seconds to the nearest action onset or quiet resolution, and
-  only when the combined evidence improves.
-- Silent audio is treated as unavailable, not as a zero. Silent gameplay and
-  no-commentary PC-game footage can pass from visual evidence alone.
-- With both modalities usable, evidence blends 60% audio and 40% visual. A
-  single modality is pulled toward neutral. Visual failure falls back to audio,
-  then text; if neither modality is usable, scoring uses text alone.
-
-The score is still an editing suggestion, not a prediction of virality.
-
-### Very long sources and gameplay VODs
-
-There is no long-video toggle and no fixed duration ceiling. A source uses the
-long path when it is at least **2 hours**, its estimated download is at least
-**8 GB**, or its duration cannot be determined. Everything else keeps the
-original short-source behavior.
-
-- Long URLs download audio only. If the source has no audio, or its audio track
-  contains no speech, Chopify downloads the lowest-resolution video instead and
-  scores it from visual evidence.
-- Transcription runs in 30-minute chunks with a 30-second overlap. Completed
-  chunks are saved as `transcript.partNNN.json`, so an interrupted job resumes
-  instead of restarting.
-- Discovery scans 30-minute ownership blocks and reads up to `--max-len` of
-  context across each boundary. Completed blocks cache as
-  `candidates.partNNN.json`.
-- Rendering downloads only the selected ranges. Nearby clips share one padded
-  section (10 seconds of padding, clips within 30 seconds merged, 10-minute cap);
-  a single longer clip keeps its full range.
-- Local long files render directly and never re-download. Long URL sections cache
-  under `sections/`; previews keep them, and a successful final render removes
-  them.
-- In Studio, **Watch** on a long URL candidate renders a 480p draft from just that
-  section, plays it, and keeps candidate edits. A project with a full local video
-  seeks the source player instead.
-- If one section fails, other clips still render and successful outputs are
-  kept. The failed ranges stay cached for a later retry.
-- Global clip times, `segments.json`, caption timings, brand JSON, and default
-  16:9 output are unchanged.
-
-## Semantic search and optional local AI
-
-Default clip selection needs no LLM. For semantic search, install [Ollama](https://ollama.com), run it locally, and download an embedding model:
+## Testing
 
 ```powershell
-ollama pull nomic-embed-text
-python chopify.py "podcast.mp4" --semantic "turning failure into a lesson"
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest -q
 ```
 
-The embedding model runs on `127.0.0.1:11434`. Sentence embeddings are cached per transcript/model. Use `--embed-model MODEL` for another compatible local embedding model. Semantic search ranks matches by similarity; it does not guarantee that the topic is present. Missing models produce setup instructions rather than a cloud fallback.
+The suite includes unit, integration and real-browser tests (Edge or
+Chrome, headless). `tools/` contains longer harnesses for crash recovery,
+five-source stress testing and Studio start-up checks.
 
-For optional LLM-based selection, download a local chat model separately and pass `--llm MODEL`. If it is unavailable, selection falls back to the heuristic. The GPU backend for faster-whisper is CUDA/NVIDIA; CPU transcription works without an NVIDIA GPU. `--device cpu|cuda|auto` controls transcription (new projects: `auto`). `--profile accurate|balanced|fast` and `--subtitles auto|off` choose between whole-video Whisper and checked YouTube captions; see [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Supporting files are removed after verified uploads while final clips are kept; see [docs/STORAGE.md](docs/STORAGE.md).
+## Documentation
 
-## Is Chopify an alternative to Opus Clip?
+| Document | About |
+|---|---|
+| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Day-to-day workflows in Studio |
+| [docs/AI.md](docs/AI.md) | AI Gateway, providers, privacy and spending controls |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture of the pipeline, scheduler and live system |
+| [docs/YOUTUBE.md](docs/YOUTUBE.md) | YouTube connection, publishing, quotas |
+| [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | YouTube access and policy notes |
+| [docs/STORAGE.md](docs/STORAGE.md) | Storage and cleanup rules |
+| [docs/CLI.md](docs/CLI.md) | Command-line reference |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and fixes |
 
-Chopify is a free, MIT-licensed option for creators who want local clipping, captions, reframing, and review. It requires local installation and uses your computer's resources. It does not include cloud collaboration, automatic social publishing, or hosted processing. Compare the workflows and privacy requirements that matter to you; feature sets and pricing of other products change.
+**Responsible use:** only clip and publish videos you own or are allowed to
+use. Downloading from YouTube is subject to YouTube's Terms of Service; see
+[docs/COMPLIANCE.md](docs/COMPLIANCE.md).
 
-## Frequently asked questions
+## Credits and license
 
-### Does video leave my computer?
+Chopify was originally created by [mehbul](https://github.com/mehbul) as
+[`mehbul/chopify`](https://github.com/mehbul/chopify). This version builds on
+that project and extends it substantially - the AI Gateway, story-based
+clipping, live ingestion and live clipping, the five-source scheduler,
+discovery, consent-based publishing and project management.
 
-Chopify does not upload footage or transcripts to a hosted processing service. Video URLs require downloads. Whisper models download on first use; face tracking may download a YuNet model; optional Ollama models need an initial download. **Local-file processing can run offline once the required dependencies and models are available.**
-
-### Can I correct captions and export subtitles?
-
-Yes. Open a prepared project in Studio, choose **Transcript**, edit word text or start/end times, and **Save captions**. Export again to apply the edits. Each draft and finished clip includes an SRT file relative to that clip's timeline. See the [caption workflow](docs/WORKFLOWS.md#edit-captions-and-export-srt).
-
-### Can I style and animate captions?
-
-Yes. Open a prepared project, choose **Captions**, and start from one of 13 presets: `default`, `clean`, `minimal`, `bold`, `boxed`, `karaoke`, `pop`, `neon`, `typewriter`, `retro`, `hormozi`, `mrbeast`, or `podcast`. Adjust font, size, margin, colors, outline, shadow, box background, words per cue, position, motion, and word highlighting. **Preview 5s** plays a selected clip range with the overlay.
-
-The overlay approximates the libass render; the exported MP4 is authoritative. Style precedence is named preset, then brand preset, then the project's caption override. **Save as preset** stores a reusable named look under Brand presets. Automatic emphasis colors up to two numbers, money amounts, ALL-CAPS words, or power words per cue. Emoji adds one relevant emoji per cue when a rule matches, and glyphs depend on an installed system emoji font.
-
-### Does split-screen identify who is speaking?
-
-No. Split-screen uses two adjustable horizontal crop centers for a fixed camera and stacks the crops vertically. It is not speaker diarization or automatic two-face tracking. Use a draft to tune the positions before final export.
-
-### What happens if processing fails or Studio closes?
-
-Completed stages and clips remain on disk. The dashboard shows which stage failed and what to do; press **Retry** to continue (finished stages are reused), or rerun the CLI with `--project PATH`. Jobs interrupted by closing Studio are queued again when it starts (an automation setting you can switch off). Changing the source, transcription model, selection settings, words, brand, or render options invalidates the relevant cached work. Do not run two writers against the same project directory at once.
-
-### Can it edit translated or multilingual subtitles?
-
-Whisper detects spoken language. English captions keep the English transcription; Hindi speech is captioned in Roman-script Hinglish (not translated, never Devanagari), and AI titles and descriptions follow the same rule. The original transcript is kept for scoring. Translation, bilingual captions and dubbing are not included.
-
-## Developer and agent documentation
-
-- [Architecture and workflow blueprint](docs/ARCHITECTURE.md)
-- [Automation dashboard, batch, monitoring, recovery](docs/AUTOMATION.md)
-- [Workflow guide and project layout](docs/WORKFLOWS.md)
-- [CLI flag reference](docs/CLI.md)
-- [CLI, Python interfaces, and local HTTP API](docs/AGENT-API.md)
-- [Setup and troubleshooting](docs/TROUBLESHOOTING.md)
-- [Publishing to YouTube Shorts (OAuth setup, approval, quota)](docs/YOUTUBE.md)
-- [Machine-readable product facts](docs/product.json) and [llms.txt](llms.txt)
-- [Search discovery and documentation deployment](docs/DISCOVERABILITY.md)
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest tests/ -q
-python -m compileall -q chopify.py dashboard.py projects.py captions.py branding.py semantic.py download_and_transcribe.py score_clips.py render_clips.py tighten.py
-```
-
-Tests include real ffmpeg renders when ffmpeg is installed; speech models and Ollama are not required for the automated suite. Keep videos, transcripts, generated clips, and local brand presets out of Git. Use footage you have permission to process.
-
-## Contributing
-
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and review expectations, and use [GitHub Discussions](https://github.com/mehbul/chopify/discussions) for questions and ideas.
-
-## License
-
-MIT — see [LICENSE](LICENSE). You can use, fork, and ship Chopify; attribution and a link back are appreciated.
-
-Maintained by [mehbul](https://github.com/mehbul). Last documentation update: **2026-11-05**.
+Licensed under the terms in [LICENSE](LICENSE).

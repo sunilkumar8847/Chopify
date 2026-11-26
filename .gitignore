@@ -18,21 +18,19 @@ service-account*.json
 *.key
 *.p12
 *.pfx
-# local Chopify settings/state if a config folder ever points here
-upload_usage.json
-upload_settings.json
-uploads.json
-publish_consents.json
-ai_settings.json
-features.json
-scheduler.json
-discovery.json
-ai_slots/
-*.db
-*.db-wal
-*.db-shm
-*.sqlite
-*.sqlite3
+# Chopify settings/state, if a config folder is ever pointed at the repo root
+/upload_usage.json
+/upload_settings.json
+/uploads.json
+/publish_consents.json
+/ai_settings.json
+/features.json
+/scheduler.json
+/discovery.json
+/ai_slots/
+/*.db
+/*.db-wal
+/*.db-shm
 .claude/settings.local.json
 
 # ---------------------------------------------------------------------------
@@ -40,8 +38,8 @@ ai_slots/
 # ---------------------------------------------------------------------------
 .venv/
 venv/
-env/
-ENV/
+/env/
+/ENV/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -55,31 +53,32 @@ coverage.xml
 htmlcov/
 
 # ---------------------------------------------------------------------------
-# Chopify outputs, user data and generated media (local only)
+# Chopify output folders: projects (recordings, transcripts, clips, previews,
+# live buffers, scheduler databases), rendered clips, work files, logs
 # ---------------------------------------------------------------------------
-projects/
-clips/
-previews/
-work/
-logs/
-_site/
-_bench/
-_phase*/
+/projects/
+/clips/
+/previews/
+/work/
+/logs/
+/_site/
+/_bench/
+/_phase*/
+# media, subtitles and logs written next to the repo root by CLI runs
+# (anywhere else - tests/fixtures, assets, docs - stays trackable)
+/*.mp4
+/*.mkv
+/*.webm
+/*.mov
+/*.m4a
+/*.mp3
+/*.wav
+/*.flac
+/*.srt
+/*.ass
+/*.jsonl
 *.log
-*.jsonl
-*.mp4
-*.mkv
-*.webm
-*.mov
-*.m4a
-*.mp3
-*.wav
-*.flac
-*.opus
-*.aac
-*.srt
-*.ass
-# downloads and temporary files
+# downloads and temporary files (never source)
 *.part
 *.part-Frag*
 *.ytdl
@@ -90,25 +89,23 @@ download-*/
 _partial-*
 
 # ---------------------------------------------------------------------------
-# AI models and large local-only artifacts
+# AI models and large local-only builds
 # ---------------------------------------------------------------------------
-models/
+/models/
 *.onnx
 *.gguf
 *.safetensors
-*.pt
-*.pth
 *.ckpt
-*.bin
-whisper.cpp/
-whisper_old/
-build_msvc*/
+/whisper.cpp/
+/whisper_old/
+/build_msvc*/
 
 # ---------------------------------------------------------------------------
-# Shell scripts (local helpers); the installer is part of the project
+# Local helper scripts at the repo root; the installer is part of the project
+# (scripts in subfolders such as tools/ stay trackable)
 # ---------------------------------------------------------------------------
-*.sh
-!install.sh
+/*.sh
+!/install.sh
 
 # ---------------------------------------------------------------------------
 # Local agent state, editors and operating-system files
